@@ -1,0 +1,25 @@
+# ── Framework Django ────────────────────────────────────────────────────────────
+django>=4.2
+djangorestframework
+djangorestframework-simplejwt
+django-cors-headers
+python-dotenv
+
+# ── Base de données ──────────────────────────────────────────────────────────────
+# SQLite (inclus avec Python) — utilisé en dev
+psycopg2-binary  # PostgreSQL
+
+# ── Extraction de texte CV ───────────────────────────────────────────────────────
+PyMuPDF          # Extraction PDF (fitz)
+python-docx      # Extraction DOCX
+
+# ── Machine Learning / NLP ───────────────────────────────────────────────────────
+scikit-learn     # TF-IDF + cosine_similarity
+nltk             # Stopwords, tokenisation
+
+# ── Microsoft Graph API (Outlook O365) ──────────────────────────────────────────
+msal             # Authentification Azure AD (OAuth2 Client Credentials)
+requests         # Appels HTTP vers l'API Graph
+
+# ── Utilitaires ─────────────────────────────────────────────────────────────────
+Pillow           # Traitement d'images (optionnel, pour miniatures)
