@@ -1,0 +1,7 @@
+backend/token.json
+backend/client_secret.json
+__pycache__/
+*.pyc
+.venv/
+db.sqlite3
+media/
