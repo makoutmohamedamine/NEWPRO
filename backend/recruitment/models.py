@@ -1,13 +1,19 @@
-from django.db import models
 from django.contrib.auth.models import AbstractUser
+from django.db import models
 
 
 class CustomUser(AbstractUser):
     ROLE_CHOICES = [
-        ('admin', 'Administrateur'),
-        ('recruteur', 'Recruteur'),
+        ("admin", "Administrateur"),
+        ("rh", "Responsable RH"),
+        ("recruteur", "Recruteur"),
+        ("manager", "Manager"),
     ]
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='recruteur')
+
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="recruteur")
+
+    class Meta:
+        db_table = "users"
 
     def __str__(self):
         return f"{self.username} ({self.role})"
@@ -17,7 +23,34 @@ class Poste(models.Model):
     titre = models.CharField(max_length=200)
     description = models.TextField()
     competences_requises = models.TextField(blank=True)
+    competences_optionnelles = models.TextField(blank=True)
+    langues_requises = models.TextField(blank=True)
+    departement = models.CharField(max_length=120, blank=True)
+    localisation = models.CharField(max_length=120, blank=True)
+    type_contrat = models.CharField(max_length=80, blank=True)
+    experience_min_annees = models.PositiveIntegerField(default=0)
+    niveau_etudes_requis = models.CharField(max_length=120, blank=True)
+    quota_cible = models.PositiveIntegerField(default=1)
+    workflow_actif = models.BooleanField(default=True)
+    score_qualification = models.FloatField(default=70)
+    niveau_priorite = models.CharField(max_length=20, default="medium")
+    poids_competences = models.FloatField(default=35)
+    poids_experience = models.FloatField(default=25)
+    poids_formation = models.FloatField(default=20)
+    poids_langues = models.FloatField(default=10)
+    poids_localisation = models.FloatField(default=5)
+    poids_soft_skills = models.FloatField(default=5)
+    created_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="owned_postes",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "job_positions"
 
     def __str__(self):
         return self.titre
@@ -28,21 +61,45 @@ class Candidat(models.Model):
     prenom = models.CharField(max_length=100)
     email = models.EmailField(unique=True)
     telephone = models.CharField(max_length=20, blank=True)
+    localisation = models.CharField(max_length=120, blank=True)
+    source = models.CharField(max_length=20, default="manual")
+    source_detail = models.CharField(max_length=255, blank=True)
+    current_title = models.CharField(max_length=160, blank=True)
+    niveau_etudes = models.CharField(max_length=120, blank=True)
+    annees_experience = models.FloatField(default=0)
+    competences = models.TextField(blank=True)
+    langues = models.TextField(blank=True)
+    soft_skills = models.TextField(blank=True)
+    resume_profil = models.TextField(blank=True)
+    consentement_rgpd = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="owned_candidats",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "candidates"
 
     def __str__(self):
         return f"{self.prenom} {self.nom}"
 
 
 class CV(models.Model):
-    FORMAT_CHOICES = [('pdf', 'PDF'), ('docx', 'DOCX')]
+    FORMAT_CHOICES = [("pdf", "PDF"), ("docx", "DOCX")]
 
-    candidat = models.ForeignKey(Candidat, on_delete=models.CASCADE, related_name='cvs')
-    fichier = models.FileField(upload_to='cvs/')
+    candidat = models.ForeignKey(Candidat, on_delete=models.CASCADE, related_name="cvs")
+    fichier = models.FileField(upload_to="cvs/")
     format_fichier = models.CharField(max_length=10, choices=FORMAT_CHOICES)
     texte_extrait = models.TextField(blank=True)
     email_source = models.EmailField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "resumes"
 
     def __str__(self):
         return f"CV de {self.candidat}"
@@ -50,78 +107,91 @@ class CV(models.Model):
 
 class Candidature(models.Model):
     STATUT_CHOICES = [
-        ('nouveau', 'Nouveau'),
-        ('en_cours', 'En cours'),
-        ('accepte', 'Accepté'),
-        ('refuse', 'Refusé'),
+        ("nouveau", "Nouveau"),
+        ("prequalifie", "Pre-qualifie"),
+        ("shortlist", "Shortlist"),
+        ("entretien", "Entretien"),
+        ("finaliste", "Finaliste"),
+        ("offre", "Offre"),
+        ("en_cours", "En cours"),
+        ("accepte", "Accepte"),
+        ("refuse", "Refuse"),
+        ("archive", "Archive"),
     ]
 
-    candidat = models.ForeignKey(Candidat, on_delete=models.CASCADE, related_name='candidatures')
-    poste = models.ForeignKey(Poste, on_delete=models.CASCADE, related_name='candidatures')
-    cv = models.ForeignKey(CV, on_delete=models.SET_NULL, null=True, related_name='candidatures')
-    statut = models.CharField(max_length=20, choices=STATUT_CHOICES, default='nouveau')
+    candidat = models.ForeignKey(Candidat, on_delete=models.CASCADE, related_name="candidatures")
+    poste = models.ForeignKey(Poste, on_delete=models.CASCADE, related_name="candidatures")
+    cv = models.ForeignKey(CV, on_delete=models.SET_NULL, null=True, related_name="candidatures")
+    statut = models.CharField(max_length=20, choices=STATUT_CHOICES, default="nouveau")
     score = models.FloatField(null=True, blank=True)
+    recommandation = models.CharField(max_length=50, blank=True)
+    workflow_step = models.CharField(max_length=80, blank=True)
+    source_channel = models.CharField(max_length=20, default="manual")
+    explication_score = models.TextField(blank=True)
+    score_details_json = models.TextField(blank=True, default="{}")
+    decision_comment = models.TextField(blank=True)
+    sla_due_at = models.DateTimeField(null=True, blank=True)
+    assigned_to = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_candidatures",
+    )
+    created_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="owned_candidatures",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"{self.candidat} → {self.poste} ({self.statut})"
+        return f"{self.candidat} -> {self.poste} ({self.statut})"
 
     class Meta:
-        ordering = ['-score']
+        db_table = "applications"
+        ordering = ["-score", "-updated_at"]
 
 
 class EmailLog(models.Model):
-    """
-    Journal de traçabilité de chaque email Outlook traité.
-    Permet d'éviter les doublons et d'auditer les imports automatiques.
-    """
     STATUS_CHOICES = [
-        ('processed', 'Traité avec succès'),
-        ('duplicate', 'Doublon ignoré'),
-        ('error', 'Erreur de traitement'),
-        ('no_cv', 'Pas de CV détecté'),
+        ("processed", "Traite avec succes"),
+        ("duplicate", "Doublon ignore"),
+        ("error", "Erreur de traitement"),
+        ("no_cv", "Pas de CV detecte"),
     ]
 
-    # Identifiant unique du message Outlook (Graph API)
     message_id = models.CharField(max_length=512, unique=True, db_index=True)
-
-    # Métadonnées de l'email
     sender_email = models.EmailField(blank=True)
     sender_name = models.CharField(max_length=200, blank=True)
     subject = models.CharField(max_length=500, blank=True)
-    received_at = models.CharField(max_length=50, blank=True)  # ISO datetime string
+    received_at = models.CharField(max_length=50, blank=True)
     filename = models.CharField(max_length=300, blank=True)
-
-    # Résultat du traitement
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='processed')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="processed")
     error_message = models.TextField(blank=True)
-
-    # Lien vers le candidat créé (null si erreur)
     candidat = models.ForeignKey(
         Candidat,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='email_logs',
+        related_name="email_logs",
     )
-
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['-created_at']
+        db_table = "email_logs"
+        ordering = ["-created_at"]
         verbose_name = "Log email Outlook"
         verbose_name_plural = "Logs emails Outlook"
 
     def __str__(self):
-        return f"[{self.status}] {self.sender_email} — {self.filename} ({self.created_at:%Y-%m-%d %H:%M})"
+        return f"[{self.status}] {self.sender_email} - {self.filename} ({self.created_at:%Y-%m-%d %H:%M})"
 
 
 class SyncHistory(models.Model):
-    """
-    Historique des synchronisations Outlook.
-    Chaque exécution du pipeline crée une entrée.
-    """
     started_at = models.DateTimeField()
     finished_at = models.DateTimeField(null=True, blank=True)
     emails_scanned = models.IntegerField(default=0)
@@ -129,13 +199,14 @@ class SyncHistory(models.Model):
     cvs_created = models.IntegerField(default=0)
     cvs_duplicate = models.IntegerField(default=0)
     cvs_error = models.IntegerField(default=0)
-    triggered_by = models.CharField(max_length=50, default='manual')  # manual / cron / api
-    errors_json = models.TextField(blank=True, default='[]')
+    triggered_by = models.CharField(max_length=50, default="manual")
+    errors_json = models.TextField(blank=True, default="[]")
 
     class Meta:
-        ordering = ['-started_at']
+        db_table = "sync_history"
+        ordering = ["-started_at"]
         verbose_name = "Historique de synchronisation"
         verbose_name_plural = "Historiques de synchronisation"
 
     def __str__(self):
-        return f"Sync {self.started_at:%Y-%m-%d %H:%M} — {self.cvs_created} créés / {self.cvs_error} erreurs"
+        return f"Sync {self.started_at:%Y-%m-%d %H:%M} - {self.cvs_created} crees / {self.cvs_error} erreurs"

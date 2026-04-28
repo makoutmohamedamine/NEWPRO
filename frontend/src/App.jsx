@@ -6,7 +6,7 @@ import Dossiers from './page/Dossiers';
 import Candidats from './page/Candidats';
 import Postes from './page/Postes';
 import OutlookSync from './components/OutlookSync';
-import GmailSync from './components/GmailSync';
+
 import AnalyseIA from './page/AnalyseIA';
 import GestionUsers from './page/GestionUsers';
 import Login from './page/login';
@@ -21,6 +21,7 @@ export default function App() {
   });
   // null = en cours de vérification, true = setup requis, false = login normal
   const [needsSetup, setNeedsSetup] = useState(token ? false : null);
+  const [welcomeToast, setWelcomeToast] = useState('');
 
   // Vérifier si un admin existe au chargement (seulement si pas connecté)
   useEffect(() => {
@@ -55,6 +56,16 @@ export default function App() {
   const handleLogin = (accessToken, user) => {
     localStorage.setItem('access_token', accessToken);
     if (user) localStorage.setItem('current_user', JSON.stringify(user));
+    const displayName =
+      [user?.first_name, user?.last_name].filter(Boolean).join(' ').trim()
+      || user?.username
+      || sessionStorage.getItem('welcome_user')
+      || '';
+    if (displayName) {
+      setWelcomeToast(displayName);
+      sessionStorage.removeItem('welcome_user');
+      setTimeout(() => setWelcomeToast(''), 2200);
+    }
     setToken(accessToken);
     setCurrentUser(user);
     setNeedsSetup(false);
@@ -95,6 +106,12 @@ export default function App() {
   return (
     <BrowserRouter>
       <div className="app-shell">
+        {welcomeToast && (
+          <div className="welcome-toast">
+            <span className="welcome-toast-icon">👋</span>
+            <span>Bienvenue {welcomeToast}</span>
+          </div>
+        )}
         <Sidebar onLogout={handleLogout} currentUser={currentUser} />
         <main className="app-main">
           <Routes>
@@ -103,7 +120,7 @@ export default function App() {
             <Route path="/candidats" element={<Candidats />} />
             <Route path="/postes"    element={<Postes />} />
             <Route path="/outlook"    element={<OutlookSync />} />
-            <Route path="/gmail"      element={<GmailSync />} />
+            
             <Route path="/analyse-ia" element={<AnalyseIA />} />
             {/* Route réservée aux admins */}
             <Route path="/utilisateurs" element={isAdmin ? <GestionUsers /> : <Navigate to="/" />} />

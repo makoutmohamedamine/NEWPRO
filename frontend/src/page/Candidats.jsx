@@ -1,116 +1,259 @@
-import { useEffect, useState } from 'react';
-import { getCandidats } from '../api/api';
+import { useEffect, useMemo, useState } from 'react';
+import { getCandidats, updateCandidate } from '../api/api';
 
-function Avatar({ name }) {
-  const initials = name
-    ? name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
-    : '?';
+const STATUS_OPTIONS = [
+  { value: 'nouveau', label: 'Nouveau' },
+  { value: 'prequalifie', label: 'Pre-qualifie' },
+  { value: 'shortlist', label: 'Shortlist' },
+  { value: 'entretien', label: 'Entretien' },
+  { value: 'finaliste', label: 'Finaliste' },
+  { value: 'offre', label: 'Offre' },
+  { value: 'accepte', label: 'Accepte' },
+  { value: 'refuse', label: 'Refuse' },
+  { value: 'archive', label: 'Archive' },
+];
+
+function CandidateCard({ candidate, onStatusChange, onPreviewCv }) {
+  const [saving, setSaving] = useState(false);
+  const hasEvaluation = Boolean(candidate.targetJob) && Number(candidate.matchScore || 0) > 0;
+
+  const handleStatusChange = async (event) => {
+    setSaving(true);
+    try {
+      await onStatusChange(candidate.candidateId || candidate.id, event.target.value);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <div style={{
-      width: 34, height: 34, borderRadius: '50%',
-      background: 'var(--red)', color: 'white',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontWeight: 700, fontSize: '0.78rem', flexShrink: 0,
-    }}>
-      {initials}
-    </div>
+    <article className="candidate-card">
+      <div className="candidate-card-top">
+        <div className="candidate-card-headcopy">
+          <div className="candidate-card-name">{candidate.fullName}</div>
+          <div className="candidate-card-meta">
+            {candidate.currentTitle || 'Profil non detecte'} • {candidate.targetJob || 'Sans poste cible'}
+          </div>
+        </div>
+        {hasEvaluation ? (
+          <div className="candidate-score-stack">
+            <div className="candidate-score-value">{Number(candidate.matchScore || 0).toFixed(1)}%</div>
+            <div className="candidate-score-label">{candidate.recommendation}</div>
+          </div>
+        ) : (
+          <div className="candidate-score-stack candidate-score-stack-muted">
+            <div className="candidate-score-empty">Sans score</div>
+          </div>
+        )}
+      </div>
+
+      <div className="candidate-summary-block">
+        <div className="candidate-section-title">Resume</div>
+        <p className="candidate-summary">{candidate.summary || 'Resume indisponible.'}</p>
+      </div>
+
+      <div className="candidate-section-title">Competences</div>
+      <div className="candidate-chip-row">
+        {(candidate.skills || []).slice(0, 6).map((skill) => (
+          <span className="badge badge-gray" key={skill}>{skill}</span>
+        ))}
+        {(!candidate.skills || candidate.skills.length === 0) && (
+          <span className="candidate-empty-text">Aucune competence extraite</span>
+        )}
+      </div>
+
+      <div className="candidate-detail-grid">
+        <div className="candidate-detail-card candidate-detail-card-wide">
+          <span className="candidate-detail-label">Contact</span>
+          <strong className="candidate-detail-value break-anywhere">{candidate.email || 'N/A'}</strong>
+          <small>{candidate.phone || 'Telephone non renseigne'}</small>
+        </div>
+        <div className="candidate-detail-card">
+          <span className="candidate-detail-label">Experience</span>
+          <strong className="candidate-detail-value">{candidate.yearsExperience || 0} an(s)</strong>
+          <small>{candidate.educationLevel || 'Non precise'}</small>
+        </div>
+        <div className="candidate-detail-card">
+          <span className="candidate-detail-label">Workflow</span>
+          <strong className="candidate-detail-value">{candidate.workflowStep}</strong>
+          <small>{candidate.statusLabel}</small>
+        </div>
+      </div>
+
+      <div className="candidate-card-actions">
+        <div className="candidate-action-field">
+          <label className="candidate-action-label">Changer le statut</label>
+          <select className="form-select" value={candidate.status} onChange={handleStatusChange} disabled={saving}>
+            {STATUS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button
+          className="btn btn-outline"
+          type="button"
+          onClick={() => candidate.cvUrl && onPreviewCv(candidate)}
+          style={{ pointerEvents: candidate.cvUrl ? 'auto' : 'none', opacity: candidate.cvUrl ? 1 : 0.5 }}
+        >
+          Ouvrir le CV
+        </button>
+      </div>
+    </article>
   );
 }
 
 export default function Candidats() {
-  const [candidats, setCandidats] = useState([]);
-  const [loading, setLoading]     = useState(true);
-  const [search, setSearch]       = useState('');
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState('');
+  const [status, setStatus] = useState('all');
+  const [previewCv, setPreviewCv] = useState(null);
+
+  const load = () => {
+    setLoading(true);
+    getCandidats()
+      .then((res) => setItems(res.data.candidates || []))
+      .finally(() => setLoading(false));
+  };
 
   useEffect(() => {
-    getCandidats()
-      .then(r => setCandidats(r.data))
-      .finally(() => setLoading(false));
+    load();
   }, []);
 
-  const filtered = candidats.filter(c => {
-    const q = search.toLowerCase();
-    return (
-      (c.nom || '').toLowerCase().includes(q) ||
-      (c.prenom || '').toLowerCase().includes(q) ||
-      (c.email || '').toLowerCase().includes(q)
+  const filtered = useMemo(() => {
+    return items.filter((item) => {
+      const matchesQuery = [item.fullName, item.email, item.targetJob, item.currentTitle]
+        .filter(Boolean)
+        .some((value) => value.toLowerCase().includes(query.toLowerCase()));
+      const matchesStatus = status === 'all' ? true : item.status === status;
+      return matchesQuery && matchesStatus;
+    });
+  }, [items, query, status]);
+
+  const handleStatusChange = async (candidateId, nextStatus) => {
+    const res = await updateCandidate(candidateId, { status: nextStatus });
+    const updated = res.data.candidate;
+    setItems((current) =>
+      current.map((item) => ((item.candidateId || item.id) === candidateId ? updated : item))
     );
-  });
+  };
+
+  const resolveCvUrl = (url) => {
+    if (!url) return '';
+    const full = url.startsWith('http://') || url.startsWith('https://')
+      ? url
+      : `http://127.0.0.1:8000${url}`;
+    return encodeURI(full);
+  };
+
+  const handlePreviewCv = (candidate) => {
+    setPreviewCv({
+      fileName: candidate.cvFileName || `${candidate.fullName || 'CV'}.pdf`,
+      url: resolveCvUrl(candidate.cvUrl),
+    });
+  };
 
   return (
     <>
-      {/* Header */}
       <div className="page-header">
         <span className="page-header-title">Candidats</span>
         <div className="page-header-right">
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-            {candidats.length} candidat{candidats.length !== 1 ? 's' : ''}
-          </span>
           <input
             className="form-input"
-            style={{ width: 220, padding: '6px 12px' }}
-            placeholder="Rechercher…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
+            style={{ width: 240 }}
+            placeholder="Rechercher un candidat..."
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
           />
+          <select className="form-select" style={{ width: 180 }} value={status} onChange={(event) => setStatus(event.target.value)}>
+            <option value="all">Tous les statuts</option>
+            {STATUS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
       <div className="page-content">
-        <div className="card">
-          {loading ? (
-            <div className="empty-state card-body">
-              <div className="spinner" style={{ margin: '0 auto 12px' }} />
-              Chargement…
+        {!loading && (
+          <div className="candidate-toolbar-summary">
+            <div className="candidate-toolbar-stat">
+              <strong>{items.length}</strong>
+              <span>Candidats total</span>
             </div>
-          ) : filtered.length > 0 ? (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Candidat</th>
-                  <th>Email</th>
-                  <th>Téléphone</th>
-                  <th>Date d'ajout</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map(c => {
-                  const fullName = `${c.prenom || ''} ${c.nom || ''}`.trim();
-                  return (
-                    <tr key={c.id}>
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <Avatar name={fullName} />
-                          <span style={{ fontWeight: 600 }}>{fullName || '—'}</span>
-                        </div>
-                      </td>
-                      <td style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>{c.email}</td>
-                      <td style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>{c.telephone || '—'}</td>
-                      <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                        {c.created_at
-                          ? new Date(c.created_at).toLocaleDateString('fr-FR')
-                          : '—'}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          ) : (
-            <div className="empty-state card-body" style={{ padding: '3rem' }}>
-              <div className="empty-state-icon">👤</div>
-              <div className="empty-state-title">
-                {search ? 'Aucun résultat' : 'Aucun candidat'}
-              </div>
-              <div style={{ fontSize: '0.875rem' }}>
-                {search
-                  ? `Aucun candidat ne correspond à "${search}"`
-                  : 'Importez des CVs via Outlook ou uploadez-les manuellement.'}
-              </div>
+            <div className="candidate-toolbar-stat">
+              <strong>{filtered.length}</strong>
+              <span>Affiches</span>
             </div>
-          )}
-        </div>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="empty-state">
+            <div className="spinner" style={{ margin: '0 auto 12px' }} />
+            Chargement des candidats...
+          </div>
+        ) : filtered.length > 0 ? (
+          <div className="candidate-grid">
+            {filtered.map((candidate) => (
+              <CandidateCard
+                key={candidate.id}
+                candidate={candidate}
+                onStatusChange={handleStatusChange}
+                onPreviewCv={handlePreviewCv}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state">
+            <div className="empty-state-title">Aucun candidat sur ce filtre</div>
+            <div style={{ fontSize: '0.9rem' }}>Ajustez la recherche ou importez de nouveaux CV depuis le dashboard.</div>
+          </div>
+        )}
       </div>
+      {previewCv && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.55)',
+            zIndex: 1200,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 18,
+          }}
+          onClick={() => setPreviewCv(null)}
+        >
+          <div
+            style={{ width: 'min(1050px, 96vw)', height: '88vh', background: '#fff', borderRadius: 12, overflow: 'hidden' }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid #e5e7eb' }}>
+              <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{previewCv.fileName}</strong>
+              <button className="btn btn-ghost" type="button" onClick={() => setPreviewCv(null)}>Fermer</button>
+            </div>
+            <object
+              data={previewCv.url}
+              type="application/pdf"
+              style={{ width: '100%', height: 'calc(88vh - 52px)' }}
+            >
+              <div style={{ padding: 18 }}>
+                Apercu indisponible dans le navigateur.
+                <div style={{ marginTop: 10 }}>
+                  <a className="btn btn-primary" href={previewCv.url} target="_blank" rel="noreferrer">
+                    Ouvrir le CV
+                  </a>
+                </div>
+              </div>
+            </object>
+          </div>
+        </div>
+      )}
     </>
   );
 }

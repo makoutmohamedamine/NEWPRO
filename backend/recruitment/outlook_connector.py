@@ -67,6 +67,57 @@ class SyncResult:
         return len(self.errors) == 0
 
 
+@dataclass(frozen=True)
+class OutlookSettings:
+    tenant_id: str
+    client_id: str
+    client_secret: str
+    mailbox: str
+
+    @classmethod
+    def from_env(cls) -> "OutlookSettings":
+        tenant_id = os.environ.get("AZURE_TENANT_ID", "").strip()
+        client_id = os.environ.get("AZURE_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("AZURE_CLIENT_SECRET", "").strip()
+        mailbox = os.environ.get("OUTLOOK_MAILBOX", "").strip()
+
+        missing = [
+            key
+            for key, value in {
+                "AZURE_TENANT_ID": tenant_id,
+                "AZURE_CLIENT_ID": client_id,
+                "AZURE_CLIENT_SECRET": client_secret,
+                "OUTLOOK_MAILBOX": mailbox,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(f"Variables Outlook manquantes: {', '.join(missing)}")
+
+        placeholders = []
+        if client_id in {"votre-client-id-ici", "your-client-id-here"}:
+            placeholders.append("AZURE_CLIENT_ID")
+        if client_secret in {"votre-client-secret-ici", "your-client-secret-here"}:
+            placeholders.append("AZURE_CLIENT_SECRET")
+        if tenant_id in {"votre-tenant-id-ici", "your-tenant-id-here"}:
+            placeholders.append("AZURE_TENANT_ID")
+        if mailbox in {"recrutement@domaine.com", "your-mailbox@domain.com"}:
+            placeholders.append("OUTLOOK_MAILBOX")
+
+        if placeholders:
+            raise RuntimeError(
+                "Variables Outlook encore en placeholder: "
+                + ", ".join(placeholders)
+            )
+
+        return cls(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+            mailbox=mailbox,
+        )
+
+
 # ─── Authentification MSAL ──────────────────────────────────────────────────────
 
 class OutlookAuthenticator:
@@ -263,13 +314,13 @@ class OutlookCVExtractor:
     @classmethod
     def from_env(cls) -> "OutlookCVExtractor":
         """Instancie depuis les variables d'environnement."""
-        tenant_id = os.environ["AZURE_TENANT_ID"]
-        client_id = os.environ["AZURE_CLIENT_ID"]
-        client_secret = os.environ["AZURE_CLIENT_SECRET"]
-        mailbox = os.environ["OUTLOOK_MAILBOX"]
-
-        auth = OutlookAuthenticator(tenant_id, client_id, client_secret)
-        return cls(auth, mailbox)
+        settings = OutlookSettings.from_env()
+        auth = OutlookAuthenticator(
+            settings.tenant_id,
+            settings.client_id,
+            settings.client_secret,
+        )
+        return cls(auth, settings.mailbox)
 
     def fetch_new_cvs(
         self,

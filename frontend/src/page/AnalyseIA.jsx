@@ -62,14 +62,57 @@ export default function AnalyseIA() {
     getPostes().then(r => setPostes(r.data)).catch(() => {});
   }, []);
 
+  const getApiErrorMessage = (err) => {
+    const data = err?.response?.data;
+
+    if (typeof data === 'string' && data.trim()) {
+      return data.slice(0, 240);
+    }
+
+    if (data && typeof data === 'object') {
+      if (typeof data.error === 'string' && data.error.trim()) return data.error;
+      if (typeof data.detail === 'string' && data.detail.trim()) return data.detail;
+      if (Array.isArray(data.non_field_errors) && data.non_field_errors.length > 0) {
+        return String(data.non_field_errors[0]);
+      }
+    }
+
+    if (err?.code === 'ECONNABORTED') {
+      return 'Delai depasse. Le serveur a mis trop de temps a repondre.';
+    }
+
+    if (err?.response?.status) {
+      return `Erreur serveur (${err.response.status}).`;
+    }
+
+    if (err?.request) {
+      return 'Impossible de joindre le backend. Verifiez que le serveur Django tourne sur http://127.0.0.1:8000.';
+    }
+
+    return 'Erreur lors de l\'analyse.';
+  };
+
+  const isSupportedFile = (f) => {
+    const name = (f?.name || '').toLowerCase();
+    return name.endsWith('.pdf') || name.endsWith('.docx');
+  };
+
   const handleDrop = (e) => {
     e.preventDefault();
     const f = e.dataTransfer.files[0];
-    if (f) setFile(f);
+    if (!f) return;
+    if (!isSupportedFile(f)) {
+      setError('Format non supporte. Utilisez un fichier PDF ou DOCX.');
+      setFile(null);
+      return;
+    }
+    setError('');
+    setFile(f);
   };
 
   const handleAnalyse = async () => {
     if (!file) { setError('Veuillez sélectionner un fichier CV.'); return; }
+    if (!isSupportedFile(file)) { setError('Format non supporte. Utilisez un fichier PDF ou DOCX.'); return; }
     setError('');
     setResult(null);
     setLoading(true);
@@ -85,7 +128,7 @@ export default function AnalyseIA() {
       const res = await analyseCV_IA(fd);
       setResult(res.data);
     } catch (e) {
-      setError(e?.response?.data?.error || 'Erreur lors de l\'analyse.');
+      setError(getApiErrorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -119,7 +162,7 @@ export default function AnalyseIA() {
             fontSize: '0.75rem', padding: '4px 12px', borderRadius: 20,
             background: '#ede9fe', color: '#7c3aed', fontWeight: 600,
           }}>
-            Propulsé par Claude (Anthropic)
+            
           </span>
         </div>
       </div>
@@ -149,7 +192,17 @@ export default function AnalyseIA() {
               type="file"
               accept=".pdf,.docx"
               style={{ display: 'none' }}
-              onChange={e => setFile(e.target.files[0])}
+              onChange={e => {
+                const selected = e.target.files?.[0];
+                if (!selected) return;
+                if (!isSupportedFile(selected)) {
+                  setError('Format non supporte. Utilisez un fichier PDF ou DOCX.');
+                  setFile(null);
+                  return;
+                }
+                setError('');
+                setFile(selected);
+              }}
             />
             {file ? (
               <>

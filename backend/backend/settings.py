@@ -54,27 +54,39 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'backend.wsgi.application'
 
-# ── Base de données ───────────────────────────────────────────────────────────
+# ── Base de données (PostgreSQL obligatoire) ──────────────────────────────────
 DB_NAME = os.getenv('DB_NAME')
+DB_USER = os.getenv('DB_USER')
+DB_PASSWORD = os.getenv('DB_PASSWORD')
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = os.getenv('DB_PORT', '5432')
 
-if DB_NAME:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': DB_NAME,
-            'USER': os.getenv('DB_USER', 'postgres'),
-            'PASSWORD': os.getenv('DB_PASSWORD', ''),
-            'HOST': os.getenv('DB_HOST', 'localhost'),
-            'PORT': os.getenv('DB_PORT', '5432'),
-        }
+missing_db_vars = [
+    var_name
+    for var_name, var_value in [
+        ('DB_NAME', DB_NAME),
+        ('DB_USER', DB_USER),
+        ('DB_PASSWORD', DB_PASSWORD),
+    ]
+    if not var_value
+]
+
+if missing_db_vars:
+    raise RuntimeError(
+        "PostgreSQL configuration is required. Missing env vars: "
+        + ", ".join(missing_db_vars)
+    )
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': DB_NAME,
+        'USER': DB_USER,
+        'PASSWORD': DB_PASSWORD,
+        'HOST': DB_HOST,
+        'PORT': DB_PORT,
     }
-else:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
-    }
+}
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
@@ -93,6 +105,10 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 CORS_ALLOW_ALL_ORIGINS = True
+
+# Autorise l'embed des fichiers media (PDF CV) dans le frontend local.
+# Sans cela, les navigateurs peuvent bloquer l'affichage en iframe/object.
+X_FRAME_OPTIONS = "ALLOWALL"
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     PosteViewSet, CandidatViewSet, CVViewSet, CandidatureViewSet,
-    dashboard, candidate_detail, candidate_upload, candidate_update,
+    dashboard, candidates_list, candidate_detail, candidate_upload, candidate_update,
     # Outlook / ML
     outlook_sync, outlook_status, analyse_cv_ml, dossiers,
     # Gmail
@@ -11,11 +11,16 @@ from .views import (
     # IA Claude
     analyse_cv_ia, score_cv_ia,
     # Authentification
-    login_view, logout_view, me_view,
+    login_view, logout_view, me_view, register_view,
     # Setup initial superuser
     check_setup, setup_superuser,
     # Gestion des utilisateurs
     user_list, user_create, user_detail, user_delete, user_toggle_active,
+)
+from .scoring_api import (
+    calculate_score_for_candidature,
+    calculate_scores_for_job,
+    calculate_all_scores,
 )
 
 router = DefaultRouter()
@@ -33,6 +38,7 @@ urlpatterns = [
 
     # ── Authentification ─────────────────────────────────────────────────────
     path('auth/login/', login_view),              # POST — connexion
+    path('auth/register/', register_view),        # POST — inscription (Sign Up)
     path('auth/logout/', logout_view),            # POST — déconnexion
     path('auth/me/', me_view),                    # GET  — utilisateur courant
     path('auth/refresh/', TokenRefreshView.as_view()),  # POST — rafraîchir token
@@ -46,6 +52,7 @@ urlpatterns = [
 
     # ── Dashboard et candidats ───────────────────────────────────────────────
     path('dashboard/', dashboard),
+    path('candidates/', candidates_list),
     path('candidates/<int:pk>/', candidate_detail),
     path('candidates/upload/', candidate_upload),
     path('candidates/<int:pk>/update/', candidate_update),
@@ -65,6 +72,11 @@ urlpatterns = [
     # ── Analyse IA (Claude) ───────────────────────────────────────────────────
     path('ai/analyse/', analyse_cv_ia),            # POST — analyse complète par IA
     path('ai/score/', score_cv_ia),                # POST — score CV vs poste par IA
+
+    # ── Scoring des candidatures ──────────────────────────────────────────────
+    path('scoring/candidature/', calculate_score_for_candidature),  # POST — calcule score pour 1 candidature
+    path('scoring/job/', calculate_scores_for_job),                 # POST — calcule scores pour une offre
+    path('scoring/all/', calculate_all_scores),                     # POST — calcule tous les scores
 
     # ── Dossiers par domaine ─────────────────────────────────────────────────
     path('dossiers/', dossiers),                   # GET  — postes + CVs groupés

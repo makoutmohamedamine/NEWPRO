@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -195,8 +196,21 @@ def extract_text_from_bytes(content: bytes, filename: str) -> str:
 def _extract_pdf(data: bytes) -> str:
     try:
         doc = fitz.open(stream=data, filetype="pdf")
-        pages_text = [page.get_text() for page in doc]
-        return "\n".join(pages_text)
+        pages_text = []
+        for page in doc:
+            text = (page.get_text("text") or "").strip()
+            if not text:
+                # Fallback: reconstruction depuis les blocs si extraction "text" vide.
+                blocks = page.get_text("blocks") or []
+                blocks = sorted(blocks, key=lambda b: (b[1], b[0]))
+                text = "\n".join((b[4] or "").strip() for b in blocks if len(b) > 4 and (b[4] or "").strip())
+            if text:
+                pages_text.append(text)
+
+        final_text = "\n".join(pages_text).strip()
+        if len(final_text) < 40:
+            logger.warning("Texte PDF très court extrait: document possiblement scanné/image.")
+        return final_text
     except Exception as exc:
         logger.warning("Erreur extraction PDF : %s", exc)
         return ""
@@ -241,24 +255,67 @@ def preprocess(text: str) -> str:
 
 # ─── Extracteurs d'informations ─────────────────────────────────────────────────
 
+def normalize_cv_text(text: str) -> str:
+    """Nettoie les artefacts frequents d'extraction PDF."""
+    text = (text or "").replace("\x00", " ").replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{2,}", "\n", text)
+    return text.strip()
+
+
 def extract_email(text: str) -> str:
-    m = EMAIL_RE.search(text)
-    return m.group(0) if m else ""
+    text = normalize_cv_text(text)
+    candidates = re.findall(r"[A-Za-z0-9._%+\-]+\s*@\s*[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", text)
+    return candidates[0].replace(" ", "") if candidates else ""
 
 
 def extract_phone(text: str) -> str:
-    m = PHONE_RE.search(text)
-    return m.group(0).strip() if m else ""
+    text = normalize_cv_text(text)
+    candidates = re.findall(r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(?\d{2,4}\)?[\s.\-]?){2,5}\d{2,4}", text)
+    for value in candidates:
+        digits = re.sub(r"\D", "", value)
+        if 9 <= len(digits) <= 15:
+            return value.strip()
+    return ""
+
+
+def _normalize_skill_text(text: str) -> str:
+    """Normalise le texte pour améliorer la détection des compétences."""
+    normalized = unicodedata.normalize("NFKD", (text or ""))
+    normalized = normalized.encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.lower()
+    normalized = re.sub(r"[\r\n\t]+", " ", normalized)
+    normalized = re.sub(r"[^a-z0-9\s+#./-]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+def _alias_pattern(alias: str) -> str:
+    parts = [p for p in re.split(r"[\s./_-]+", alias) if p]
+    if not parts:
+        return r"$^"
+    escaped_parts = [re.escape(p) for p in parts]
+    core = r"[\s./_-]*".join(escaped_parts)
+    return rf"(?<![a-z0-9]){core}(?![a-z0-9])"
 
 
 def extract_skills(text: str) -> list[str]:
-    """Détecte les compétences via le catalogue (correspondance exacte multi-alias)."""
-    text_lower = text.lower()
-    found = []
+    """Détecte les compétences via le catalogue avec matching robuste."""
+    text_norm = _normalize_skill_text(text)
+    found: list[str] = []
+
     for skill_key, aliases in SKILL_CATALOG.items():
-        if any(alias in text_lower for alias in aliases):
+        matched = False
+        for alias in aliases:
+            alias_norm = _normalize_skill_text(alias)
+            if not alias_norm:
+                continue
+            if re.search(_alias_pattern(alias_norm), text_norm):
+                matched = True
+                break
+        if matched:
             found.append(skill_key)
-    return found
+    return list(dict.fromkeys(found))
 
 
 def extract_education(text: str) -> str:
@@ -292,12 +349,14 @@ def estimate_experience(text: str) -> float:
 
 def guess_name(text: str, email: str, fallback: str = "Candidat Inconnu") -> str:
     """Devine le nom du candidat depuis la première ligne non vide."""
+    text = normalize_cv_text(text)
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if lines:
-        first = re.sub(r"[^A-Za-zÀ-ÿ' \-]", " ", lines[0]).strip()
-        words = [w for w in first.split() if len(w) > 1]
-        if 1 < len(words) <= 5:
-            return " ".join(w.capitalize() for w in words)
+        for line in lines[:6]:
+            cleaned = re.sub(r"[^A-Za-zÀ-ÿ' \-]", " ", line).strip()
+            words = [w for w in cleaned.split() if 1 < len(w) < 30]
+            if 1 < len(words) <= 4 and not any(k in cleaned.lower() for k in ["curriculum", "vitae", "resume", "cv"]):
+                return " ".join(w.capitalize() for w in words)
     if email:
         local = email.split("@")[0].replace(".", " ").replace("_", " ")
         return " ".join(p.capitalize() for p in local.split())
@@ -400,6 +459,7 @@ class CVClassifier:
         sender_email: str = "",
         sender_name: str = "",
     ) -> CVAnalysisResult:
+        raw_text = normalize_cv_text(raw_text)
         # ── 1. Extraction des informations ──────────────────────────────────────
         email = extract_email(raw_text) or sender_email
         phone = extract_phone(raw_text)
