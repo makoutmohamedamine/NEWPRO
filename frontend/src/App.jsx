@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Dashboard from './page/Dashboard';
 import Dossiers from './page/Dossiers';
+import DossiersCV from './page/DossiersCV';
 import Candidats from './page/Candidats';
 import Postes from './page/Postes';
 import OutlookSync from './components/OutlookSync';
@@ -116,7 +117,8 @@ export default function App() {
         <main className="app-main">
           <Routes>
             <Route path="/"          element={<Dashboard />} />
-            <Route path="/dossiers"  element={<Dossiers />} />
+            <Route path="/dossiers"    element={<Dossiers />} />
+            <Route path="/dossiers-cv" element={<DossiersCV />} />
             <Route path="/candidats" element={<Candidats />} />
             <Route path="/postes"    element={<Postes />} />
             <Route path="/outlook"    element={<OutlookSync />} />

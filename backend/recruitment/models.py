@@ -71,6 +71,7 @@ class Candidat(models.Model):
     langues = models.TextField(blank=True)
     soft_skills = models.TextField(blank=True)
     resume_profil = models.TextField(blank=True)
+    domaine = models.ForeignKey("Domaine", on_delete=models.SET_NULL, null=True, blank=True, related_name="candidats")
     consentement_rgpd = models.BooleanField(default=True)
     created_by = models.ForeignKey(
         CustomUser,
@@ -110,12 +111,16 @@ class Candidature(models.Model):
         ("nouveau", "Nouveau"),
         ("prequalifie", "Pre-qualifie"),
         ("shortlist", "Shortlist"),
-        ("entretien", "Entretien"),
-        ("finaliste", "Finaliste"),
-        ("offre", "Offre"),
-        ("en_cours", "En cours"),
+        ("entretien_rh", "Entretien RH"),
+        ("entretien_technique", "Entretien Technique"),
+        ("validation_manager", "Validation Manager"),
         ("accepte", "Accepte"),
         ("refuse", "Refuse"),
+        # Legacy values kept for backward compatibility.
+        ("entretien", "Entretien (legacy)"),
+        ("finaliste", "Finaliste (legacy)"),
+        ("offre", "Offre (legacy)"),
+        ("en_cours", "En cours (legacy)"),
         ("archive", "Archive"),
     ]
 
@@ -154,6 +159,42 @@ class Candidature(models.Model):
     class Meta:
         db_table = "applications"
         ordering = ["-score", "-updated_at"]
+
+
+class CandidatureStatusHistory(models.Model):
+    candidature = models.ForeignKey(Candidature, on_delete=models.CASCADE, related_name="status_history")
+    previous_status = models.CharField(max_length=30, blank=True)
+    new_status = models.CharField(max_length=30)
+    comment = models.TextField(blank=True)
+    changed_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="status_changes",
+    )
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "application_status_history"
+        ordering = ["-changed_at"]
+
+    def __str__(self):
+        return f"#{self.candidature_id}: {self.previous_status} -> {self.new_status}"
+
+
+class Domaine(models.Model):
+    nom = models.CharField(max_length=120, unique=True)
+    description = models.TextField(blank=True)
+    actif = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "domains"
+        ordering = ["nom"]
+
+    def __str__(self):
+        return self.nom
 
 
 class EmailLog(models.Model):

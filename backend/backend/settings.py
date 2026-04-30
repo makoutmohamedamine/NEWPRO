@@ -3,9 +3,9 @@ from dotenv import load_dotenv
 from datetime import timedelta
 import os
 
-load_dotenv()
-
 BASE_DIR = Path(__file__).resolve().parent.parent
+# Charger explicitement le .env du dossier backend, quel que soit le CWD.
+load_dotenv(BASE_DIR / ".env")
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-me')
 DEBUG = True
 ALLOWED_HOSTS = ['*']

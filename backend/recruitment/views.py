@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timedelta
 
 from django.contrib.auth import authenticate, get_user_model
@@ -12,12 +13,14 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from .ml_classifier import get_classifier
 from .ai_engine import calculer_score_avance
-from .models import Candidat, Candidature, CV, EmailLog, Poste, SyncHistory
+from .models import Candidat, Candidature, CandidatureStatusHistory, CV, Domaine, EmailLog, Poste, SyncHistory
 from .serializers import (
     CVSerializer,
     CandidatSerializer,
     CandidatureSerializer,
+    CandidatureStatusHistorySerializer,
     CreateUserSerializer,
+    DomaineSerializer,
     PosteSerializer,
     UserSerializer,
 )
@@ -29,12 +32,15 @@ STATUS_LABELS = {
     "nouveau": "Nouveau",
     "prequalifie": "Pre-qualifie",
     "shortlist": "Shortlist",
+    "entretien_rh": "Entretien RH",
+    "entretien_technique": "Entretien Technique",
+    "validation_manager": "Validation Manager",
+    "accepte": "Accepte",
+    "refuse": "Refuse",
     "entretien": "Entretien",
     "finaliste": "Finaliste",
     "offre": "Offre",
     "en_cours": "En cours",
-    "accepte": "Accepte",
-    "refuse": "Refuse",
     "archive": "Archive",
 }
 
@@ -42,10 +48,35 @@ STATUS_FLOW = [
     "nouveau",
     "prequalifie",
     "shortlist",
-    "entretien",
-    "finaliste",
-    "offre",
+    "entretien_rh",
+    "entretien_technique",
+    "validation_manager",
     "accepte",
+    "refuse",
+]
+
+WORKFLOW_STATUS_META = [
+    {"value": "nouveau", "label": "Nouveau", "color": "#b42318"},
+    {"value": "prequalifie", "label": "Pre-qualifie", "color": "#ea580c"},
+    {"value": "shortlist", "label": "Shortlist", "color": "#0f766e"},
+    {"value": "entretien_rh", "label": "Entretien RH", "color": "#1d4ed8"},
+    {"value": "entretien_technique", "label": "Entretien Technique", "color": "#4f46e5"},
+    {"value": "validation_manager", "label": "Validation Manager", "color": "#7c3aed"},
+    {"value": "accepte", "label": "Accepte", "color": "#15803d"},
+    {"value": "refuse", "label": "Refuse", "color": "#6b7280"},
+]
+
+DEFAULT_DOMAIN_NAMES = [
+    "Informatique & IT",
+    "Ressources Humaines",
+    "Finance & Comptabilite",
+    "Marketing & Communication",
+    "Commerce & Vente",
+    "Production Industrielle",
+    "Logistique",
+    "Maintenance",
+    "Qualite & Securite",
+    "Administration",
 ]
 
 
@@ -66,11 +97,92 @@ def scope_owned_queryset(request, queryset, owner_field="created_by"):
     # on garde un mode "espace public" avec les enregistrements sans propriétaire.
     if not request.user.is_authenticated:
         return queryset.filter(**{f"{owner_field}__isnull": True})
-    return queryset.filter(**{owner_field: request.user})
+    return queryset.filter(Q(**{owner_field: request.user}) | Q(**{f"{owner_field}__isnull": True}))
 
 
 def split_csv(value):
     return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
+def ai_strict_mode_enabled():
+    return str(os.environ.get("AI_STRICT_PROVIDER", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+DOMAIN_KEYWORDS = {
+    "Industrie & Peinture": [
+        "industrie",
+        "industriel",
+        "peinture",
+        "colorado",
+        "production",
+        "usine",
+        "maintenance",
+        "electromecanique",
+        "qse",
+        "hse",
+        "qualite",
+        "colorimetrie",
+        "resine",
+        "pigment",
+        "lean manufacturing",
+    ],
+    "IT & Digital": [
+        "developpeur",
+        "developer",
+        "software",
+        "data",
+        "ia",
+        "ai",
+        "python",
+        "react",
+        "django",
+        "devops",
+        "cloud",
+        "informatique",
+    ],
+    "Commercial & Marketing": [
+        "commercial",
+        "vente",
+        "sales",
+        "marketing",
+        "brand",
+        "crm",
+        "business development",
+        "communication",
+    ],
+    "Finance & Administration": [
+        "finance",
+        "comptable",
+        "comptabilite",
+        "controle de gestion",
+        "administration",
+        "rh",
+        "paie",
+    ],
+}
+
+
+def classify_poste_domain(poste):
+    haystack = " ".join(
+        [
+            poste.titre or "",
+            poste.description or "",
+            poste.departement or "",
+            poste.competences_requises or "",
+            poste.competences_optionnelles or "",
+        ]
+    ).lower()
+    if not haystack.strip():
+        return "Autres domaines"
+
+    best_domain = "Autres domaines"
+    best_score = 0
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        score = sum(1 for keyword in keywords if keyword in haystack)
+        if score > best_score:
+            best_score = score
+            best_domain = domain
+    return best_domain
 
 
 def recommendation_for_score(score):
@@ -89,12 +201,15 @@ def workflow_step_for_status(status):
         "nouveau": "Ingestion",
         "prequalifie": "Pre-qualification",
         "shortlist": "Shortlist",
-        "entretien": "Entretien",
-        "finaliste": "Decision finale",
-        "offre": "Offre envoyee",
+        "entretien_rh": "Entretien RH",
+        "entretien_technique": "Entretien Technique",
+        "validation_manager": "Validation Manager",
         "accepte": "Cloture",
         "refuse": "Cloture",
         "archive": "Archive",
+        "entretien": "Entretien",
+        "finaliste": "Decision finale",
+        "offre": "Offre envoyee",
         "en_cours": "Evaluation RH",
     }.get(status, "Evaluation RH")
 
@@ -105,6 +220,9 @@ def sla_due_for_status(status):
         "nouveau": 24,
         "prequalifie": 48,
         "shortlist": 72,
+        "entretien_rh": 4 * 24,
+        "entretien_technique": 5 * 24,
+        "validation_manager": 48,
         "entretien": 7 * 24,
         "finaliste": 48,
         "offre": 72,
@@ -113,8 +231,221 @@ def sla_due_for_status(status):
     return now + timedelta(hours=hours)
 
 
+def bootstrap_default_domains():
+    for name in DEFAULT_DOMAIN_NAMES:
+        Domaine.objects.get_or_create(nom=name, defaults={"description": f"Domaine RH: {name}"})
+
+
+def suggest_domain_name_from_text(text):
+    value = (text or "").lower()
+    mapping = [
+        ("Production Industrielle", ["industrie", "production", "usine", "peinture", "colorado"]),
+        ("Maintenance", ["maintenance", "electromecanique", "mecanique"]),
+        ("Qualite & Securite", ["qualite", "qse", "hse", "securite"]),
+        ("Informatique & IT", ["it", "informatique", "developpeur", "software", "data"]),
+        ("Ressources Humaines", ["rh", "ressources humaines", "recrutement", "talent"]),
+        ("Finance & Comptabilite", ["finance", "comptable", "comptabilite", "controle de gestion"]),
+        ("Marketing & Communication", ["marketing", "communication", "brand", "digital"]),
+        ("Commerce & Vente", ["commercial", "vente", "sales", "business development"]),
+        ("Logistique", ["logistique", "supply chain", "transport", "warehouse"]),
+        ("Administration", ["administration", "assistant", "office manager"]),
+    ]
+    for domain_name, keywords in mapping:
+        if any(keyword in value for keyword in keywords):
+            return domain_name
+    return "Administration"
+
+
+def resolve_domain_for_candidate(poste=None, analysis=None):
+    source_text = " ".join(
+        [
+            getattr(poste, "titre", "") or "",
+            getattr(poste, "description", "") or "",
+            getattr(poste, "departement", "") or "",
+            getattr(analysis, "best_profile", "") or "",
+            getattr(analysis, "summary", "") or "",
+        ]
+    )
+    name = suggest_domain_name_from_text(source_text)
+    domain, _ = Domaine.objects.get_or_create(nom=name, defaults={"description": f"Domaine RH: {name}"})
+    return domain
+
+
+def infer_domain_for_existing_candidate(candidat):
+    signal = " ".join(
+        [
+            candidat.current_title or "",
+            candidat.resume_profil or "",
+            candidat.competences or "",
+            candidat.niveau_etudes or "",
+        ]
+    )
+    name = suggest_domain_name_from_text(signal)
+    domain, _ = Domaine.objects.get_or_create(nom=name, defaults={"description": f"Domaine RH: {name}"})
+    return domain
+
+
+def grok_recommend_domain(cv_text, postes=None):
+    try:
+        from .ai_deepseek import recommander_repartition_cv_groq
+
+        postes_payload = postes or []
+        response = recommander_repartition_cv_groq(cv_text or "", postes_payload, DEFAULT_DOMAIN_NAMES)
+        if response.get("ia_disponible") and response.get("domaine"):
+            domain_name = str(response.get("domaine")).strip()
+            if domain_name:
+                domain, _ = Domaine.objects.get_or_create(
+                    nom=domain_name,
+                    defaults={"description": f"Domaine RH: {domain_name}"},
+                )
+                return domain, response
+    except Exception:
+        pass
+    return None, {}
+
+
+def grok_score_against_poste(cv_text, poste):
+    try:
+        from .ai_deepseek import score_cv_contre_poste_groq
+
+        result = score_cv_contre_poste_groq(cv_text or "", poste.titre or "", poste.description or "")
+        if result.get("ia_disponible"):
+            score = float(result.get("score", 0.0) or 0.0)
+            matched = result.get("competences_matchees", []) or []
+            missing = result.get("competences_manquantes", []) or []
+            level = str(result.get("niveau", "")).lower().strip()
+            details = {
+                "skills": round(score, 1),
+                "experience": 0.0,
+                "education": 0.0,
+                "languages": 0.0,
+                "location": 0.0,
+                "softSkills": 0.0,
+                "requiredSkillMatches": len(matched),
+                "optionalSkillMatches": 0,
+                "matchedSkills": matched,
+                "missingSkills": missing,
+                "provider": result.get("methode", "Grok"),
+            }
+            explanation = result.get("justification", "") or f"Scoring {result.get('methode', 'Grok')}."
+            if level in {"excellent", "bon"} and score < 70:
+                score = 70.0
+            return score, details, explanation, True
+    except Exception:
+        pass
+    return 0.0, {}, "", False
+
+
+def backfill_candidates_domains(request):
+    queryset = scope_owned_queryset(request, Candidat.objects.filter(domaine__isnull=True))
+    updated_ids = []
+    for candidat in queryset:
+        # Backfill rapide pour éviter la latence au chargement des pages.
+        domain = infer_domain_for_existing_candidate(candidat)
+        if domain is None:
+            continue
+        candidat.domaine = domain
+        candidat.save(update_fields=["domaine"])
+        updated_ids.append(candidat.id)
+    return updated_ids
+
+
+def ensure_candidate_has_scored_candidature(candidat, request_user=None):
+    # Si une candidature existe déjà, ne rien faire.
+    if candidat.candidatures.exists():
+        return
+    cv = candidat.cvs.order_by("-created_at").first()
+    if not cv:
+        return
+
+    owner = request_user if getattr(request_user, "is_authenticated", False) else None
+    analysis_stub = type("A", (), {"best_profile": candidat.current_title or ""})()
+    poste = pick_target_job(analysis_stub, explicit_job_id=None, owner=owner)
+    if not poste:
+        return
+
+    score, details_payload, explanation, grok_used = grok_score_against_poste(cv.texte_extrait or "", poste)
+    if not grok_used:
+        candidat_data = {
+            "texte_cv": cv.texte_extrait or "",
+            "competences": split_csv(candidat.competences),
+            "langues": candidat.langues or "",
+            "soft_skills": candidat.soft_skills or "",
+            "annees_experience": float(candidat.annees_experience or 0),
+            "niveau_etudes": candidat.niveau_etudes or "",
+            "localisation": candidat.localisation or "",
+        }
+        poste_data = {
+            "competences_requises": poste.competences_requises or "",
+            "competences_optionnelles": poste.competences_optionnelles or "",
+            "langues_requises": poste.langues_requises or "",
+            "experience_min_annees": float(poste.experience_min_annees or 0),
+            "niveau_etudes_requis": poste.niveau_etudes_requis or "",
+            "localisation": poste.localisation or "",
+            "poids_competences": float(poste.poids_competences or 35),
+            "poids_experience": float(poste.poids_experience or 25),
+            "poids_formation": float(poste.poids_formation or 20),
+            "poids_langues": float(poste.poids_langues or 10),
+            "poids_localisation": float(poste.poids_localisation or 5),
+            "poids_soft_skills": float(poste.poids_soft_skills or 5),
+        }
+        score_result = calculer_score_avance(candidat_data, poste_data)
+        score = float(score_result.get("score_final", 0.0))
+        details_payload = {
+            "skills": round(float(score_result.get("score_competences", 0.0)), 1),
+            "experience": round(float(score_result.get("score_experience", 0.0)), 1),
+            "education": round(float(score_result.get("score_formation", 0.0)), 1),
+            "languages": round(float(score_result.get("score_langues", 0.0)), 1),
+            "location": round(float(score_result.get("score_localisation", 0.0)), 1),
+            "softSkills": round(float(score_result.get("score_soft_skills", 0.0)), 1),
+            "requiredSkillMatches": len(score_result.get("details", {}).get("competences_matchees", [])),
+            "optionalSkillMatches": len(score_result.get("details", {}).get("competences_optionnelles", [])),
+        }
+        explanation = (
+            f"Skills {details_payload['skills']}%, experience {details_payload['experience']}%, "
+            f"education {details_payload['education']}%, languages {details_payload['languages']}%, "
+            f"location {details_payload['location']}%."
+        )
+
+    status = "shortlist" if score >= poste.score_qualification else ("prequalifie" if score >= 50 else "refuse")
+
+    Candidature.objects.update_or_create(
+        candidat=candidat,
+        poste=poste,
+        defaults={
+            "cv": cv,
+            "statut": status,
+            "score": score,
+            "recommandation": recommendation_for_score(score),
+            "workflow_step": workflow_step_for_status(status),
+            "source_channel": candidat.source or "manual",
+            "explication_score": explanation,
+            "score_details_json": json.dumps(details_payload),
+            "sla_due_at": sla_due_for_status(status),
+            "created_by": owner,
+        },
+    )
+
+
 def parse_candidate_name(full_name):
-    parts = [part for part in (full_name or "").split() if part]
+    raw = (full_name or "").strip()
+    cleaned = " ".join(raw.replace("_", " ").replace("-", " ").split())
+    lower = cleaned.lower()
+    invalid_markers = [
+        "competence",
+        "compétence",
+        "experience",
+        "expérience",
+        "formation",
+        "profil",
+        "resume",
+        "curriculum",
+        "vitae",
+        "contact",
+    ]
+    if any(marker in lower for marker in invalid_markers):
+        return "Candidat", "Inconnu"
+    parts = [part for part in cleaned.split() if part]
     if not parts:
         return "Candidat", "Inconnu"
     if len(parts) == 1:
@@ -210,7 +541,8 @@ def score_candidate_against_job(analysis, poste):
 def pick_target_job(analysis, explicit_job_id=None, owner=None):
     posts_qs = Poste.objects.all()
     if owner and not is_admin(owner):
-        posts_qs = posts_qs.filter(created_by=owner)
+        # Inclure les postes de l'utilisateur + postes legacy sans propriétaire.
+        posts_qs = posts_qs.filter(Q(created_by=owner) | Q(created_by__isnull=True))
 
     if explicit_job_id:
         try:
@@ -221,7 +553,12 @@ def pick_target_job(analysis, explicit_job_id=None, owner=None):
     for poste in posts_qs:
         if poste.titre.lower() == (analysis.best_profile or "").lower():
             return poste
-    return posts_qs.order_by("-created_at").first()
+    selected = posts_qs.order_by("-created_at").first()
+    if selected:
+        return selected
+
+    # Fallback de sécurité: si aucun poste scope user, tenter un poste global.
+    return Poste.objects.all().order_by("-created_at").first()
 
 
 def candidature_payload(candidature):
@@ -258,6 +595,8 @@ def candidature_payload(candidature):
         "scoreDetails": details,
         "scoreExplanation": candidature.explication_score,
         "source": candidat.source,
+        "domainId": candidat.domaine_id,
+        "domainName": candidat.domaine.nom if candidat.domaine else "",
         "sourceEmail": cv.email_source if cv else candidat.source_detail,
         "cvUrl": cv.fichier.url if cv and cv.fichier else None,
         "cvFileName": cv.fichier.name.split("/")[-1] if cv and cv.fichier else None,
@@ -270,10 +609,24 @@ def candidature_payload(candidature):
 
 
 def candidate_summary_payload(candidat):
-    candidature = candidat.candidatures.select_related("poste", "assigned_to").order_by("-updated_at").first()
+    # Pour le dashboard et les listes, on expose la meilleure candidature
+    # (score le plus élevé), puis la plus récente en cas d'égalité.
+    candidature = (
+        candidat.candidatures.select_related("poste", "assigned_to")
+        .order_by("-score", "-updated_at")
+        .first()
+    )
     if candidature:
         return candidature_payload(candidature)
     cv = candidat.cvs.order_by("-created_at").first()
+    skills = split_csv(candidat.competences)
+    base_score = min(
+        100.0,
+        (len(skills) * 7.0)
+        + (float(candidat.annees_experience or 0) * 6.0)
+        + (10.0 if candidat.niveau_etudes else 0.0),
+    )
+    base_score = round(base_score, 1)
     return {
         "id": candidat.id,
         "candidateId": candidat.id,
@@ -283,21 +636,23 @@ def candidate_summary_payload(candidat):
         "location": candidat.localisation,
         "profileLabel": candidat.current_title or "Non classe",
         "currentTitle": candidat.current_title,
-        "matchScore": 0.0,
+        "matchScore": base_score,
         "status": "nouveau",
         "statusLabel": STATUS_LABELS["nouveau"],
-        "recommendation": "A evaluer",
+        "recommendation": recommendation_for_score(base_score),
         "workflowStep": "Ingestion",
         "educationLevel": candidat.niveau_etudes or "Non precise",
         "yearsExperience": float(candidat.annees_experience or 0),
         "summary": candidat.resume_profil or (cv.texte_extrait[:240] if cv and cv.texte_extrait else ""),
-        "skills": split_csv(candidat.competences),
+        "skills": skills,
         "languages": split_csv(candidat.langues),
         "softSkills": split_csv(candidat.soft_skills),
         "notes": "",
         "scoreDetails": {},
         "scoreExplanation": "",
         "source": candidat.source,
+        "domainId": candidat.domaine_id,
+        "domainName": candidat.domaine.nom if candidat.domaine else "",
         "sourceEmail": cv.email_source if cv else candidat.source_detail,
         "cvUrl": cv.fichier.url if cv and cv.fichier else None,
         "cvFileName": cv.fichier.name.split("/")[-1] if cv and cv.fichier else None,
@@ -307,6 +662,34 @@ def candidate_summary_payload(candidat):
         "createdAt": candidat.created_at.isoformat(),
         "updatedAt": candidat.created_at.isoformat(),
     }
+
+
+def deduplicate_candidate_items(items):
+    """
+    Déduplique les candidats pour éviter les doublons d'affichage.
+    Conserve la version la plus récente (updatedAt desc).
+    """
+    dedup = {}
+    sorted_items = sorted(
+        items,
+        key=lambda item: item.get("updatedAt") or item.get("createdAt") or "",
+        reverse=True,
+    )
+    for item in sorted_items:
+        email = (item.get("email") or "").strip().lower()
+        full_name = (item.get("fullName") or "").strip().lower()
+        phone = "".join(ch for ch in (item.get("phone") or "") if ch.isdigit())
+        if email:
+            key = f"email:{email}"
+        elif full_name and phone:
+            key = f"name_phone:{full_name}:{phone}"
+        elif full_name:
+            key = f"name:{full_name}"
+        else:
+            key = f"id:{item.get('candidateId') or item.get('id')}"
+        if key not in dedup:
+            dedup[key] = item
+    return list(dedup.values())
 
 
 @api_view(["GET"])
@@ -493,33 +876,42 @@ def dashboard(request):
         status_filter = request.GET.get("status", "").strip()
         profile_filter = request.GET.get("profile", "").strip()
 
-        candidatures = scope_owned_queryset(
+        candidatures_qs = scope_owned_queryset(
             request,
             Candidature.objects.select_related("candidat", "poste", "cv", "assigned_to"),
         )
-        if q:
-            candidatures = candidatures.filter(
-                Q(candidat__nom__icontains=q)
-                | Q(candidat__prenom__icontains=q)
-                | Q(candidat__email__icontains=q)
-                | Q(poste__titre__icontains=q)
-            )
-        if status_filter:
-            candidatures = candidatures.filter(statut=status_filter)
-        if profile_filter:
-            candidatures = candidatures.filter(poste__titre=profile_filter)
+        candidats_qs = scope_owned_queryset(
+            request,
+            Candidat.objects.prefetch_related("candidatures__poste", "candidatures__assigned_to", "cvs"),
+        ).order_by("-created_at")
 
-        items = [candidature_payload(item) for item in candidatures.order_by("-updated_at")]
+        items = [candidate_summary_payload(candidat) for candidat in candidats_qs]
+        items = deduplicate_candidate_items(items)
+        if q:
+            q_lower = q.lower()
+            items = [
+                item
+                for item in items
+                if any(
+                    q_lower in str(value).lower()
+                    for value in [item.get("fullName"), item.get("email"), item.get("targetJob"), item.get("currentTitle")]
+                    if value
+                )
+            ]
+        if status_filter:
+            items = [item for item in items if item.get("status") == status_filter]
+        if profile_filter:
+            items = [item for item in items if item.get("targetJob") == profile_filter]
+
+        items = sorted(items, key=lambda it: it.get("updatedAt") or it.get("createdAt") or "", reverse=True)
         scores = [item["matchScore"] for item in items if item["matchScore"] is not None]
 
-        status_distribution = {
-            row["statut"]: row["count"]
-            for row in candidatures.values("statut").annotate(count=Count("id"))
-        }
-        profile_distribution = {
-            row["poste__titre"] or "Non classe": row["count"]
-            for row in candidatures.values("poste__titre").annotate(count=Count("id"))
-        }
+        status_distribution = {}
+        profile_distribution = {}
+        for item in items:
+            status_distribution[item.get("status", "nouveau")] = status_distribution.get(item.get("status", "nouveau"), 0) + 1
+            profile_key = item.get("targetJob") or "Non classe"
+            profile_distribution[profile_key] = profile_distribution.get(profile_key, 0) + 1
 
         funnel = [{"key": key, "label": STATUS_LABELS.get(key, key), "count": status_distribution.get(key, 0)} for key in STATUS_FLOW]
         score_distribution = [
@@ -532,16 +924,15 @@ def dashboard(request):
         alerts = [
             item
             for item in items
-            if item["matchScore"] >= 85 and item["status"] in {"nouveau", "prequalifie", "en_cours"}
+            if item["matchScore"] >= 85 and item["status"] in {"nouveau", "prequalifie", "en_cours", "entretien_rh"}
         ][:6]
 
         jobs_overview = []
         postes_qs = scope_owned_queryset(request, Poste.objects.all()).order_by("titre")
-        candidats_qs = scope_owned_queryset(request, Candidat.objects.all())
         candidatures_global_qs = scope_owned_queryset(request, Candidature.objects.all())
 
         for poste in postes_qs:
-            job_candidatures = candidatures.filter(poste=poste)
+            job_candidatures = candidatures_qs.filter(poste=poste)
             job_scores = [float(c.score or 0) for c in job_candidatures if c.score is not None]
             jobs_overview.append(
                 {
@@ -559,22 +950,30 @@ def dashboard(request):
 
         processing_hours = []
         now = timezone.now()
-        for candidature in candidatures:
+        for candidature in candidatures_qs:
             if candidature.created_at and candidature.updated_at:
                 processing_hours.append((candidature.updated_at - candidature.created_at).total_seconds() / 3600)
-        overdue_count = len([c for c in candidatures if c.sla_due_at and c.sla_due_at < now and c.statut not in {"accepte", "refuse", "archive"}])
+        overdue_count = len([c for c in candidatures_qs if c.sla_due_at and c.sla_due_at < now and c.statut not in {"accepte", "refuse", "archive"}])
 
         return Response(
             {
                 "stats": {
                     "totalApplications": candidatures_global_qs.count(),
                     "openJobs": postes_qs.filter(workflow_actif=True).count(),
-                    "totalCandidates": candidats_qs.count(),
+                    "totalCandidates": scope_owned_queryset(request, Candidat.objects.all()).count(),
                     "averageScore": round(sum(scores) / len(scores), 1) if scores else 0,
                     "bestScore": round(max(scores), 1) if scores else 0,
                     "newCandidates": status_distribution.get("nouveau", 0),
                     "qualifiedCandidates": len([s for s in scores if s >= 70]),
-                    "interviewsCount": status_distribution.get("entretien", 0) + status_distribution.get("finaliste", 0),
+                    "interviewsCount": (
+                        status_distribution.get("entretien", 0)
+                        + status_distribution.get("finaliste", 0)
+                        + status_distribution.get("entretien_rh", 0)
+                        + status_distribution.get("entretien_technique", 0)
+                        + status_distribution.get("validation_manager", 0)
+                    ),
+                    "acceptedCandidates": status_distribution.get("accepte", 0),
+                    "refusedCandidates": status_distribution.get("refuse", 0),
                     "overdueActions": overdue_count,
                     "processingDelayHours": round(sum(processing_hours) / len(processing_hours), 1) if processing_hours else 0,
                 },
@@ -601,19 +1000,22 @@ def dashboard(request):
 
 
 @api_view(["GET"])
-@authentication_classes([])
 @permission_classes([AllowAny])
 def candidates_list(request):
+    bootstrap_default_domains()
+    domain_filter = request.GET.get("domain", "").strip()
     candidats = scope_owned_queryset(
         request,
         Candidat.objects.prefetch_related("candidatures__poste", "candidatures__assigned_to", "cvs").all(),
     ).order_by("-created_at")
+    if domain_filter:
+        candidats = candidats.filter(domaine_id=domain_filter)
     items = [candidate_summary_payload(candidat) for candidat in candidats]
+    items = deduplicate_candidate_items(items)
     return Response({"candidates": items})
 
 
 @api_view(["GET"])
-@authentication_classes([])
 @permission_classes([AllowAny])
 def candidate_detail(request, pk):
     try:
@@ -626,11 +1028,25 @@ def candidate_detail(request, pk):
     return Response({"candidate": candidate_summary_payload(candidat)})
 
 
+@api_view(["DELETE"])
+@permission_classes([AllowAny])
+def candidate_delete(request, pk):
+    try:
+        candidat = scope_owned_queryset(request, Candidat.objects).get(pk=pk)
+    except Candidat.DoesNotExist:
+        return Response({"error": "Candidat non trouve"}, status=404)
+
+    full_name = f"{candidat.prenom} {candidat.nom}".strip()
+    candidat.delete()
+    return Response({"message": f"Candidat supprime: {full_name}"})
+
+
 @api_view(["POST"])
-@authentication_classes([])
 @permission_classes([AllowAny])
 def candidate_upload(request):
     try:
+        from .ai_deepseek import recommander_repartition_cv_groq
+
         cv_file = request.FILES.get("cv")
         if not cv_file:
             return Response({"error": "Aucun fichier CV fourni"}, status=400)
@@ -654,8 +1070,70 @@ def candidate_upload(request):
         analysis.languages_csv = ""
         analysis.location = ""
 
+        # Anti-doublon essentiel: si un CV quasi identique existe déjà, retourner l'existant.
+        normalized_cv_text = (analysis.raw_text or "").strip()
+        if normalized_cv_text:
+            existing_cv = (
+                CV.objects.select_related("candidat")
+                .filter(texte_extrait=normalized_cv_text)
+                .order_by("-created_at")
+                .first()
+            )
+            if existing_cv and existing_cv.candidat:
+                existing_payload = candidate_summary_payload(existing_cv.candidat)
+                return Response({"candidate": existing_payload, "duplicate": True}, status=200)
+
+        groq_repartition = {}
+        groq_poste_id = None
+        if not target_job_id:
+            try:
+                postes_for_ai = [
+                    {
+                        "id": p.id,
+                        "titre": p.titre,
+                        "description": p.description or "",
+                        "competences_requises": p.competences_requises or "",
+                        "departement": p.departement or "",
+                    }
+                    for p in Poste.objects.all().order_by("-created_at")[:40]
+                ]
+                groq_repartition = recommander_repartition_cv_groq(
+                    analysis.raw_text or "",
+                    postes_for_ai,
+                    DEFAULT_DOMAIN_NAMES,
+                )
+                if groq_repartition.get("ia_disponible") and groq_repartition.get("poste_titre"):
+                    suggested = str(groq_repartition.get("poste_titre", "")).strip().lower()
+                    poste_match = next((p for p in postes_for_ai if str(p["titre"]).strip().lower() == suggested), None)
+                    if poste_match:
+                        groq_poste_id = str(poste_match["id"])
+            except Exception:
+                groq_repartition = {}
+
+        # Ne pas bloquer l'import si Grok est indisponible : fallback local pour garder l'app fonctionnelle.
+
+        bootstrap_default_domains()
         prenom, nom = parse_candidate_name(analysis.full_name)
+        if prenom == "Candidat" and nom == "Inconnu":
+            fallback_name = (analysis.email or source_email or "").split("@")[0].replace(".", " ").replace("_", " ").strip()
+            if fallback_name:
+                prenom, nom = parse_candidate_name(fallback_name.title())
         email = unique_candidate_email(analysis.email or source_email)
+        poste = pick_target_job(
+            analysis,
+            explicit_job_id=target_job_id or groq_poste_id or None,
+            owner=request.user if request.user.is_authenticated else None,
+        )
+        domaine = resolve_domain_for_candidate(poste=poste, analysis=analysis)
+        if groq_repartition.get("ia_disponible") and groq_repartition.get("domaine"):
+            domaine, _ = Domaine.objects.get_or_create(
+                nom=groq_repartition.get("domaine"),
+                defaults={"description": f"Domaine RH: {groq_repartition.get('domaine')}"},
+            )
+        elif analysis.raw_text:
+            grok_domain, _ = grok_recommend_domain(analysis.raw_text or "", [])
+            if grok_domain:
+                domaine = grok_domain
         candidat = Candidat.objects.create(
             nom=nom,
             prenom=prenom,
@@ -668,6 +1146,7 @@ def candidate_upload(request):
             annees_experience=analysis.years_experience,
             competences=", ".join(analysis.detected_skills),
             resume_profil=analysis.summary,
+            domaine=domaine,
             created_by=request.user if request.user.is_authenticated else None,
         )
 
@@ -679,33 +1158,42 @@ def candidate_upload(request):
             email_source=source_email,
         )
 
-        poste = pick_target_job(
-            analysis,
-            explicit_job_id=target_job_id or None,
-            owner=request.user if request.user.is_authenticated else None,
-        )
         candidature = None
         if poste:
-            score, details, explanation = score_candidate_against_job(analysis, poste)
+            score, details, explanation, grok_used = grok_score_against_poste(analysis.raw_text or "", poste)
+            if not grok_used:
+                score, details, explanation = score_candidate_against_job(analysis, poste)
             status = "shortlist" if score >= poste.score_qualification else ("prequalifie" if score >= 50 else "refuse")
-            candidature = Candidature.objects.create(
+            candidature, _ = Candidature.objects.update_or_create(
                 candidat=candidat,
                 poste=poste,
-                cv=cv,
-                statut=status,
-                score=score,
-                recommandation=recommendation_for_score(score),
-                workflow_step=workflow_step_for_status(status),
-                source_channel=source,
-                explication_score=explanation,
-                score_details_json=json.dumps(details),
-                sla_due_at=sla_due_for_status(status),
-                created_by=request.user if request.user.is_authenticated else None,
+                defaults={
+                    "cv": cv,
+                    "statut": status,
+                    "score": score,
+                    "recommandation": recommendation_for_score(score),
+                    "workflow_step": workflow_step_for_status(status),
+                    "source_channel": source,
+                    "explication_score": explanation,
+                    "score_details_json": json.dumps(details),
+                    "sla_due_at": sla_due_for_status(status),
+                    "created_by": request.user if request.user.is_authenticated else None,
+                },
             )
 
         payload = candidate_summary_payload(candidat)
         if candidature:
             payload = candidature_payload(candidature)
+        if groq_repartition:
+            routing_payload = {
+                "enabled": bool(groq_repartition.get("ia_disponible")),
+                "poste_titre": groq_repartition.get("poste_titre", ""),
+                "domaine": groq_repartition.get("domaine", ""),
+                "confiance": groq_repartition.get("confiance", 0),
+                "justification": groq_repartition.get("justification", ""),
+            }
+            payload["groqRouting"] = routing_payload
+            payload["deepseekRouting"] = routing_payload
         return Response({"candidate": payload}, status=201)
     except Exception as exc:
         import traceback
@@ -714,7 +1202,6 @@ def candidate_upload(request):
 
 
 @api_view(["PATCH"])
-@authentication_classes([])
 @permission_classes([AllowAny])
 def candidate_update(request, pk):
     try:
@@ -729,11 +1216,21 @@ def candidate_update(request, pk):
     status = request.data.get("status")
     notes = request.data.get("decisionComment")
     assigned_to_id = request.data.get("assignedToId")
+    status_comment = request.data.get("statusComment", "")
 
     if status:
+        previous_status = candidature.statut
         candidature.statut = status
         candidature.workflow_step = workflow_step_for_status(status)
         candidature.sla_due_at = sla_due_for_status(status)
+        if previous_status != status:
+            CandidatureStatusHistory.objects.create(
+                candidature=candidature,
+                previous_status=previous_status,
+                new_status=status,
+                comment=status_comment or "",
+                changed_by=request.user if request.user.is_authenticated else None,
+            )
     if notes is not None:
         candidature.decision_comment = notes
     if assigned_to_id:
@@ -802,24 +1299,29 @@ class PosteViewSet(viewsets.ModelViewSet):
                 "poids_soft_skills": float(poste.poids_soft_skills or 5),
             }
 
-            score_result = calculer_score_avance(candidat_data, poste_data)
-            score = float(score_result.get("score_final", 0.0))
+            score, details_payload, explanation, grok_used = grok_score_against_poste(cv.texte_extrait or "", poste)
+            if not grok_used and not ai_strict_mode_enabled():
+                score_result = calculer_score_avance(candidat_data, poste_data)
+                score = float(score_result.get("score_final", 0.0))
+                details_payload = {
+                    "skills": round(float(score_result.get("score_competences", 0.0)), 1),
+                    "experience": round(float(score_result.get("score_experience", 0.0)), 1),
+                    "education": round(float(score_result.get("score_formation", 0.0)), 1),
+                    "languages": round(float(score_result.get("score_langues", 0.0)), 1),
+                    "location": round(float(score_result.get("score_localisation", 0.0)), 1),
+                    "softSkills": round(float(score_result.get("score_soft_skills", 0.0)), 1),
+                    "requiredSkillMatches": len(score_result.get("details", {}).get("competences_matchees", [])),
+                    "optionalSkillMatches": len(score_result.get("details", {}).get("competences_optionnelles", [])),
+                }
+                explanation = (
+                    f"Skills {details_payload['skills']}%, experience {details_payload['experience']}%, "
+                    f"education {details_payload['education']}%, languages {details_payload['languages']}%, "
+                    f"location {details_payload['location']}%."
+                )
+            elif not grok_used and ai_strict_mode_enabled():
+                continue
+
             status = "shortlist" if score >= poste.score_qualification else ("prequalifie" if score >= 50 else "refuse")
-            details_payload = {
-                "skills": round(float(score_result.get("score_competences", 0.0)), 1),
-                "experience": round(float(score_result.get("score_experience", 0.0)), 1),
-                "education": round(float(score_result.get("score_formation", 0.0)), 1),
-                "languages": round(float(score_result.get("score_langues", 0.0)), 1),
-                "location": round(float(score_result.get("score_localisation", 0.0)), 1),
-                "softSkills": round(float(score_result.get("score_soft_skills", 0.0)), 1),
-                "requiredSkillMatches": len(score_result.get("details", {}).get("competences_matchees", [])),
-                "optionalSkillMatches": len(score_result.get("details", {}).get("competences_optionnelles", [])),
-            }
-            explanation = (
-                f"Skills {details_payload['skills']}%, experience {details_payload['experience']}%, "
-                f"education {details_payload['education']}%, languages {details_payload['languages']}%, "
-                f"location {details_payload['location']}%."
-            )
 
             defaults = {
                 "cv": cv,
@@ -1073,11 +1575,12 @@ def outlook_status(request):
 
 
 @api_view(["GET"])
-@authentication_classes([])
 @permission_classes([AllowAny])
 def dossiers(request):
     try:
+        bootstrap_default_domains()
         result = []
+        domain_buckets = {}
         postes_qs = scope_owned_queryset(request, Poste.objects.all()).order_by("titre")
         for poste in postes_qs:
             candidatures = scope_owned_queryset(
@@ -1086,31 +1589,50 @@ def dossiers(request):
             )
             items = [candidature_payload(candidature) for candidature in candidatures]
             scores = [item["matchScore"] for item in items if item["matchScore"] is not None]
-            result.append(
+            domaine = classify_poste_domain(poste)
+            dossier_item = {
+                "id": poste.id,
+                "titre": poste.titre,
+                "description": poste.description,
+                "departement": poste.departement,
+                "localisation": poste.localisation,
+                "typeContrat": poste.type_contrat,
+                "priorite": poste.niveau_priorite,
+                "seuilQualification": poste.score_qualification,
+                "competences": poste.competences_requises,
+                "langues": poste.langues_requises,
+                "domaine": domaine,
+                "totalCvs": len(items),
+                "nouveaux": len([item for item in items if item["status"] == "nouveau"]),
+                "prequalifies": len([item for item in items if item["status"] == "prequalifie"]),
+                "entretiens": len([item for item in items if item["status"] == "entretien"]),
+                "acceptes": len([item for item in items if item["status"] == "accepte"]),
+                "refuses": len([item for item in items if item["status"] == "refuse"]),
+                "outlookCvs": len([item for item in items if item["source"] == "outlook"]),
+                "bestScore": round(max(scores), 1) if scores else 0,
+                "avgScore": round(sum(scores) / len(scores), 1) if scores else 0,
+                "cvs": items,
+            }
+            result.append(dossier_item)
+            bucket = domain_buckets.setdefault(
+                domaine,
                 {
-                    "id": poste.id,
-                    "titre": poste.titre,
-                    "description": poste.description,
-                    "departement": poste.departement,
-                    "localisation": poste.localisation,
-                    "typeContrat": poste.type_contrat,
-                    "priorite": poste.niveau_priorite,
-                    "seuilQualification": poste.score_qualification,
-                    "competences": poste.competences_requises,
-                    "langues": poste.langues_requises,
-                    "totalCvs": len(items),
-                    "nouveaux": len([item for item in items if item["status"] == "nouveau"]),
-                    "prequalifies": len([item for item in items if item["status"] == "prequalifie"]),
-                    "entretiens": len([item for item in items if item["status"] == "entretien"]),
-                    "acceptes": len([item for item in items if item["status"] == "accepte"]),
-                    "refuses": len([item for item in items if item["status"] == "refuse"]),
-                    "outlookCvs": len([item for item in items if item["source"] == "outlook"]),
-                    "bestScore": round(max(scores), 1) if scores else 0,
-                    "avgScore": round(sum(scores) / len(scores), 1) if scores else 0,
-                    "cvs": items,
-                }
+                    "domaine": domaine,
+                    "totalPostes": 0,
+                    "totalCvs": 0,
+                    "bestScore": 0,
+                    "dossiers": [],
+                },
             )
-        return Response({"dossiers": result})
+            bucket["totalPostes"] += 1
+            bucket["totalCvs"] += dossier_item["totalCvs"]
+            bucket["bestScore"] = max(bucket["bestScore"], dossier_item["bestScore"])
+            bucket["dossiers"].append(dossier_item)
+        domain_folders = sorted(
+            domain_buckets.values(),
+            key=lambda item: (0 if item["domaine"] == "Industrie & Peinture" else 1, item["domaine"]),
+        )
+        return Response({"dossiers": result, "dossiersParDomaine": domain_folders})
     except Exception as exc:
         import traceback
 
@@ -1121,6 +1643,7 @@ def dossiers(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def analyse_cv_ia(request):
+    from .ai_deepseek import analyser_cv_groq
     from .ml_scoring_engine import analyze_cv_ml
     from .ai_engine import extraire_texte
 
@@ -1152,7 +1675,13 @@ def analyse_cv_ia(request):
         if not cv_text.strip():
             return Response({"error": "Impossible d'extraire le texte du CV."}, status=400)
         
-        # Analyse avec ML (TF-IDF + Word2Vec + XGBoost)
+        # Analyse Groq (prioritaire) puis fallback ML.
+        groq_result = analyser_cv_groq(cv_text, job_description=job_desc, job_title=job_title)
+        if groq_result.get("ia_disponible"):
+            groq_result["methode"] = "Grok"
+            return Response(groq_result)
+
+        # Fallback ML (TF-IDF + Word2Vec + XGBoost)
         result = analyze_cv_ml(cv_text, job_description=job_desc, job_title=job_title)
         
         # Formatage de la réponse
@@ -1175,9 +1704,11 @@ def analyse_cv_ia(request):
             'score_global': int(result.match_score),
             'recommandation': 'À retenir' if result.match_score >= 75 else ('Intéressant' if result.match_score >= 50 else 'Insuffisant'),
             'justification_score': f'TF-IDF: {result.tfidf_score:.0f}%, Word2Vec: {result.w2v_score:.0f}%, XGBoost: {result.xgb_score:.0f}%',
-            'ia_disponible': True,
+            'ia_disponible': bool(groq_result.get("ia_disponible", True)),
             'methode': 'TF-IDF + Word2Vec + XGBoost',
             'confidence': result.confidence,
+            'groq_error': groq_result.get("error", ""),
+            'deepseek_error': groq_result.get("error", ""),
         })
     except Exception as exc:
         import traceback
@@ -1189,6 +1720,7 @@ def analyse_cv_ia(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def score_cv_ia(request):
+    from .ai_deepseek import score_cv_contre_poste_groq
     from .ml_scoring_engine import score_cv_against_job
     from .ai_engine import extraire_texte
 
@@ -1222,8 +1754,15 @@ def score_cv_ia(request):
         if not cv_text.strip():
             return Response({"error": "Impossible d'extraire le texte du CV."}, status=400)
         
-        # Scoring avec ML (TF-IDF + Word2Vec + XGBoost)
+        # Scoring Groq (prioritaire) puis fallback ML.
+        groq_score = score_cv_contre_poste_groq(cv_text, job_title, job_desc)
+        if groq_score.get("ia_disponible"):
+            return Response(groq_score)
+
+        # Fallback ML (TF-IDF + Word2Vec + XGBoost)
         result = score_cv_against_job(cv_text, job_title, job_desc)
+        result["groq_error"] = groq_score.get("justification", "")
+        result["deepseek_error"] = groq_score.get("justification", "")
         return Response(result)
     except Exception as exc:
         import traceback
@@ -1263,3 +1802,53 @@ def analyse_cv_ml(request):
         import traceback
 
         return Response({"error": str(exc), "detail": traceback.format_exc()}, status=500)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def workflow_statuses(request):
+    return Response({"statuses": WORKFLOW_STATUS_META})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def domains_list(request):
+    bootstrap_default_domains()
+    backfill_candidates_domains(request)
+    queryset = Domaine.objects.filter(actif=True).annotate(candidats_count=Count("candidats"))
+    return Response({"domains": DomaineSerializer(queryset, many=True).data})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def domain_candidates(request, pk):
+    backfill_candidates_domains(request)
+    try:
+        domaine = Domaine.objects.get(pk=pk, actif=True)
+    except Domaine.DoesNotExist:
+        return Response({"error": "Domaine non trouve."}, status=404)
+    candidats = scope_owned_queryset(
+        request,
+        Candidat.objects.filter(domaine=domaine).prefetch_related("candidatures__poste", "cvs"),
+    ).order_by("-created_at")
+    return Response(
+        {
+            "domain": DomaineSerializer(domaine).data,
+            "candidates": [candidate_summary_payload(candidat) for candidat in candidats],
+        }
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def candidate_status_history(request, pk):
+    try:
+        candidat = scope_owned_queryset(
+            request,
+            Candidat.objects.prefetch_related("candidatures__status_history"),
+        ).get(pk=pk)
+    except Candidat.DoesNotExist:
+        return Response({"error": "Candidat non trouve."}, status=404)
+    candidatures = candidat.candidatures.all()
+    history = CandidatureStatusHistory.objects.filter(candidature__in=candidatures).select_related("changed_by")
+    return Response({"history": CandidatureStatusHistorySerializer(history, many=True).data})
