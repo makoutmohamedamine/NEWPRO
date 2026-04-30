@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { createPoste, deletePoste, getDossiers, getPostes, updatePoste } from '../api/api';
+import { createPoste, deleteCandidate, deletePoste, getDossiers, getPostes, updatePoste } from '../api/api';
 
 const EMPTY = {
   titre: '',
@@ -101,6 +101,7 @@ export default function Postes() {
   const [jobs, setJobs] = useState([]);
   const [folders, setFolders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(EMPTY);
@@ -110,10 +111,14 @@ export default function Postes() {
 
   const load = () => {
     setLoading(true);
+    setError('');
     Promise.all([getPostes(), getDossiers()])
       .then(([jobsRes, foldersRes]) => {
         setJobs(jobsRes.data || []);
         setFolders(foldersRes.data?.dossiers || []);
+      })
+      .catch((err) => {
+        setError(err?.response?.data?.error || 'Impossible de charger les postes.');
       })
       .finally(() => setLoading(false));
   };
@@ -165,6 +170,18 @@ export default function Postes() {
     }
   };
 
+  const handleDeleteCandidate = async (candidateId) => {
+    if (!candidateId) return;
+    const ok = window.confirm('Supprimer ce candidat ?');
+    if (!ok) return;
+    try {
+      await deleteCandidate(candidateId);
+      load();
+    } catch (err) {
+      setError(err?.response?.data?.error || 'Suppression du candidat impossible.');
+    }
+  };
+
   return (
     <>
       <div className="page-header">
@@ -200,6 +217,8 @@ export default function Postes() {
             <div className="spinner" style={{ margin: '0 auto 12px' }} />
             Chargement des postes...
           </div>
+        ) : error ? (
+          <div className="alert alert-error">{error}</div>
         ) : (
           <div className="jobs-grid">
             {jobs.map((job) => (
@@ -258,7 +277,16 @@ export default function Postes() {
                         >
                           Modifier
                         </button>
-                        <button className="btn btn-ghost" onClick={() => deletePoste(job.id).then(load)}>
+                        <button
+                          className="btn btn-ghost"
+                          onClick={() =>
+                            deletePoste(job.id)
+                              .then(load)
+                              .catch((err) =>
+                                setError(err?.response?.data?.error || 'Suppression du poste impossible.')
+                              )
+                          }
+                        >
                           Supprimer
                         </button>
                       </div>
@@ -322,6 +350,13 @@ export default function Postes() {
                                         Telecharger CV
                                       </a>
                                     )}
+                                    <button
+                                      className="btn btn-ghost"
+                                      type="button"
+                                      onClick={() => handleDeleteCandidate(candidate.candidateId || candidate.id)}
+                                    >
+                                      Supprimer
+                                    </button>
                                   </div>
                                 </div>
                               ))}

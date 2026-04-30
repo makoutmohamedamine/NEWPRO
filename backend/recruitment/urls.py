@@ -3,12 +3,12 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     PosteViewSet, CandidatViewSet, CVViewSet, CandidatureViewSet,
-    dashboard, candidates_list, candidate_detail, candidate_upload, candidate_update,
+    dashboard, candidates_list, candidate_detail, candidate_delete, candidate_upload, candidate_update,
     # Outlook / ML
     outlook_sync, outlook_status, analyse_cv_ml, dossiers,
     # Gmail
     gmail_sync, gmail_status, gmail_debug,
-    # IA Claude
+    # IA Groq
     analyse_cv_ia, score_cv_ia,
     # Authentification
     login_view, logout_view, me_view, register_view,
@@ -16,6 +16,8 @@ from .views import (
     check_setup, setup_superuser,
     # Gestion des utilisateurs
     user_list, user_create, user_detail, user_delete, user_toggle_active,
+    # Workflow / Domains
+    workflow_statuses, domains_list, domain_candidates, candidate_status_history,
 )
 from .scoring_api import (
     calculate_score_for_candidature,
@@ -54,8 +56,13 @@ urlpatterns = [
     path('dashboard/', dashboard),
     path('candidates/', candidates_list),
     path('candidates/<int:pk>/', candidate_detail),
+    path('candidates/<int:pk>/delete/', candidate_delete),
     path('candidates/upload/', candidate_upload),
     path('candidates/<int:pk>/update/', candidate_update),
+    path('candidates/<int:pk>/history/', candidate_status_history),
+    path('workflow/statuses/', workflow_statuses),
+    path('domains/', domains_list),
+    path('domains/<int:pk>/candidates/', domain_candidates),
 
     # ── Pipeline Outlook (legacy) ────────────────────────────────────────────
     path('outlook/sync/', outlook_sync),           # POST — déclenche la synchro
@@ -69,7 +76,7 @@ urlpatterns = [
     # ── Analyse ML à la demande ──────────────────────────────────────────────
     path('ml/analyse/', analyse_cv_ml),            # POST — analyse un CV uploadé
 
-    # ── Analyse IA (Claude) ───────────────────────────────────────────────────
+    # ── Analyse IA (Groq) ─────────────────────────────────────────────────────
     path('ai/analyse/', analyse_cv_ia),            # POST — analyse complète par IA
     path('ai/score/', score_cv_ia),                # POST — score CV vs poste par IA
 

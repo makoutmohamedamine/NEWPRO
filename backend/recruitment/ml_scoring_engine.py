@@ -89,6 +89,24 @@ SKILL_CATALOG: dict[str, list[str]] = {
     # Design
     "figma": ["figma"],
     "ui/ux": ["ui/ux", "ux design", "ui design", "user experience"],
+    # Industrie peinture / chimie / production
+    "peinture industrielle": ["peinture industrielle", "industrial coating", "coating"],
+    "formulation peinture": ["formulation peinture", "formulation", "paint formulation"],
+    "resines": ["resine", "resines", "résine", "résines"],
+    "pigments": ["pigment", "pigments"],
+    "colorimetrie": ["colorimetrie", "colorimétrie", "color matching", "teinte"],
+    "controle qualite": ["controle qualite", "contrôle qualité", "quality control", "qc"],
+    "assurance qualite": ["assurance qualite", "assurance qualité", "quality assurance", "qa"],
+    "hse": ["hse", "qhse", "ehs", "sante securite", "hygiène sécurité environnement"],
+    "iso 9001": ["iso 9001"],
+    "iso 14001": ["iso 14001"],
+    "production industrielle": ["production industrielle", "production", "atelier"],
+    "amelioration continue": ["amelioration continue", "amélioration continue", "kaizen"],
+    "lean manufacturing": ["lean manufacturing", "lean", "5s", "six sigma"],
+    "maintenance industrielle": ["maintenance industrielle", "maintenance", "gmao"],
+    "electromecanique": ["electromecanique", "électromécanique", "electromechanical"],
+    "chimie": ["chimie", "chemical"],
+    "sap": ["sap", "sap pp", "sap mm"],
 }
 
 EDUCATION_LEVELS = {
@@ -110,6 +128,16 @@ EDUCATION_PATTERNS = [
 YEAR_RE = re.compile(r"\b(20\d{2}|19\d{2})\b")
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 PHONE_RE = re.compile(r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(?\d{2,4}\)?[\s.\-]?){2,5}\d{2,4}")
+EXPLICIT_EXP_RE = re.compile(
+    r"(\d{1,2})\s*\+?\s*(?:ans?|years?)\s*(?:d[' ]?)?(?:experience|exp|expérience)",
+    re.IGNORECASE,
+)
+MONTH_EXP_RE = re.compile(r"(\d{1,2})\s*(?:mois|months?)", re.IGNORECASE)
+COLORADO_CONTEXT_PATTERNS = [
+    "colorado", "peinture", "peintures", "coating", "formulation", "resine",
+    "résine", "pigment", "colorimetrie", "colorimétrie", "controle qualite",
+    "contrôle qualité", "production industrielle", "hse", "qhse",
+]
 
 
 # ─── Structures de résultat ────────────────────────────────────────────────────
@@ -291,6 +319,79 @@ def get_xgb_manager():
     return _xgb_manager
 
 
+_optimized_bundle = None
+
+
+def _load_optimized_bundle():
+    global _optimized_bundle
+    if _optimized_bundle is not None:
+        return _optimized_bundle
+    try:
+        from .ml_feature_engineering import (
+            cosine,
+            dense_w2v_document_vector,
+            handcrafted_features,
+            tokenize_clean,
+        )
+        model_dir = Path(__file__).parent / "models_optimized"
+        tfidf_path = model_dir / "optimized_tfidf.pkl"
+        scaler_path = model_dir / "optimized_scaler.pkl"
+        xgb_path = model_dir / "optimized_xgb.pkl"
+        if not (tfidf_path.exists() and scaler_path.exists() and xgb_path.exists()):
+            _optimized_bundle = {}
+            return _optimized_bundle
+        bundle = {
+            "tfidf": pickle.load(open(tfidf_path, "rb")),
+            "scaler": pickle.load(open(scaler_path, "rb")),
+            "xgb": pickle.load(open(xgb_path, "rb")),
+            "w2v": None,
+            "cosine": cosine,
+            "dense_w2v_document_vector": dense_w2v_document_vector,
+            "handcrafted_features": handcrafted_features,
+            "tokenize_clean": tokenize_clean,
+        }
+        w2v_path = model_dir / "optimized_w2v.pkl"
+        if w2v_path.exists():
+            bundle["w2v"] = pickle.load(open(w2v_path, "rb"))
+        _optimized_bundle = bundle
+        logger.info("Optimized pipeline loaded from models_optimized")
+        return _optimized_bundle
+    except Exception as exc:
+        logger.warning("Optimized pipeline load failed: %s", exc)
+        _optimized_bundle = {}
+        return _optimized_bundle
+
+
+def _optimized_pair_score(cv_text: str, job_desc: str) -> float:
+    bundle = _load_optimized_bundle()
+    if not bundle:
+        return -1.0
+    try:
+        tfidf = bundle["tfidf"]
+        scaler = bundle["scaler"]
+        model = bundle["xgb"]
+        w2v = bundle["w2v"]
+        cv_vec = tfidf.transform([cv_text])
+        job_vec = tfidf.transform([job_desc])
+        tfidf_cos = bundle["cosine"](cv_vec.toarray().ravel(), job_vec.toarray().ravel())
+        w2v_cos = 0.0
+        if w2v is not None:
+            cv_tokens = bundle["tokenize_clean"](cv_text)
+            job_tokens = bundle["tokenize_clean"](job_desc)
+            cv_w = bundle["dense_w2v_document_vector"](cv_tokens, w2v, tfidf.vocabulary_, cv_vec)
+            job_w = bundle["dense_w2v_document_vector"](job_tokens, w2v, tfidf.vocabulary_, job_vec)
+            w2v_cos = bundle["cosine"](cv_w, job_w)
+        hand, _ = bundle["handcrafted_features"](cv_text, job_desc)
+        X = np.hstack([np.array([tfidf_cos, w2v_cos], dtype=np.float32), hand]).reshape(1, -1)
+        Xs = scaler.transform(X)
+        proba = model.predict_proba(Xs)[0]
+        p = float(proba[1] if len(proba) > 1 else proba[0])
+        return max(0.0, min(100.0, p * 100.0))
+    except Exception as exc:
+        logger.warning("Optimized scoring fallback: %s", exc)
+        return -1.0
+
+
 # ─── Extraction d'informations ────────────────────────────────────────────────
 
 def extract_email(text: str) -> str:
@@ -358,18 +459,34 @@ def extract_education(text: str) -> str:
 
 def estimate_experience(text: str) -> float:
     """Estime les années d'expérience."""
-    # Méthode 1 : plage d'années
-    years = sorted({int(y) for y in YEAR_RE.findall(text)})
-    if len(years) >= 2:
-        span = max(years) - min(years)
-        if 0 < span <= 40:
-            return float(min(span, 25))
-    
-    # Méthode 2 : mention explicite
-    m = re.search(r"(\d{1,2})\s*\+?\s*ans?", text.lower())
+    text_norm = text or ""
+
+    # 1) Priorité à la mention explicite "X ans d'expérience".
+    m = EXPLICIT_EXP_RE.search(text_norm)
     if m:
         return float(min(int(m.group(1)), 25))
-    
+
+    # 2) Déduire à partir des durées courtes "X mois" (stages, missions).
+    month_matches = MONTH_EXP_RE.findall(text_norm)
+    if month_matches:
+        total_months = sum(int(v) for v in month_matches)
+        if 0 < total_months <= 600:
+            return round(min(total_months / 12.0, 25.0), 2)
+
+    # 3) Fallback prudent: span d'années uniquement dans les lignes "expérience".
+    lines = [ln.strip().lower() for ln in text_norm.splitlines() if ln.strip()]
+    exp_lines = [
+        ln for ln in lines
+        if any(k in ln for k in ["experience", "expérience", "stage", "emploi", "poste", "mission", "travail"])
+        and not any(k in ln for k in ["né le", "naissance", "bac", "licence", "master", "doctorat", "diplome", "diplôme"])
+    ]
+    years = sorted({int(y) for y in YEAR_RE.findall(" ".join(exp_lines))})
+    if len(years) >= 2:
+        span = max(years) - min(years)
+        if 0 < span <= 25:
+            return float(span)
+
+    # 4) Aucun signal fiable.
     return 0.0
 
 
@@ -377,10 +494,16 @@ def guess_name(text: str, email: str = "", fallback: str = "Candidat Inconnu") -
     """Devine le nom du candidat."""
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if lines:
-        first = re.sub(r"[^A-Za-zÀ-ÿ' \-]", " ", lines[0]).strip()
-        words = [w for w in first.split() if len(w) > 1 and len(w) < 30]
-        if 1 < len(words) <= 5:
-            return " ".join(w.capitalize() for w in words)
+        for line in lines[:12]:
+            candidate = line.lower()
+            if "@" in candidate or any(x in candidate for x in ["gmail", "yahoo", "hotmail", "curriculum", "cv"]):
+                continue
+            if re.search(r"\d", candidate):
+                continue
+            cleaned = re.sub(r"[^A-Za-zÀ-ÿ' \-]", " ", line).strip()
+            words = [w for w in cleaned.split() if 1 < len(w) < 30]
+            if 1 < len(words) <= 5:
+                return " ".join(w.capitalize() for w in words)
     
     if email and "@" in email:
         name_part = email.split("@")[0].replace(".", " ").replace("_", " ")
@@ -454,6 +577,26 @@ def _education_fit_score(candidate_level: str, job_text: str) -> float:
     return 55.0
 
 
+def _domain_context_bonus(cv_text: str, job_text: str) -> float:
+    """
+    Bonus de domaine (0-100) quand le CV et le poste partagent
+    un contexte métier peinture/industrie.
+    """
+    cv_norm = _normalize_skill_text(cv_text)
+    job_norm = _normalize_skill_text(job_text)
+    if not job_norm:
+        return 50.0
+
+    matches = 0
+    for token in COLORADO_CONTEXT_PATTERNS:
+        token_norm = _normalize_skill_text(token)
+        if token_norm and token_norm in job_norm and token_norm in cv_norm:
+            matches += 1
+
+    # Dès 5 signaux partagés, on considère un fort alignement.
+    return min(100.0, (matches / 5.0) * 100.0)
+
+
 # ─── Analyse complète d'un CV ─────────────────────────────────────────────────
 
 def analyze_cv_ml(cv_text: str, job_description: str = "", job_title: str = "") -> CVAnalysisResult:
@@ -502,6 +645,9 @@ def analyze_cv_ml(cv_text: str, job_description: str = "", job_title: str = "") 
     
     # Score XGBoost
     xgb_score = manager.predict_score(feature_array[0])
+    optimized_score = _optimized_pair_score(cv_text, job_description) if job_description else -1.0
+    if optimized_score >= 0:
+        xgb_score = (xgb_score * 0.35) + (optimized_score * 0.65)
     
     # Scoring final adaptatif, orienté adéquation CV <-> poste.
     tfidf_pct = features_dict['tfidf_score'] * 100.0
@@ -524,26 +670,29 @@ def analyze_cv_ml(cv_text: str, job_description: str = "", job_title: str = "") 
 
     education_fit_pct = _education_fit_score(education, f"{job_title or ''} {job_description or ''}")
     profile_strength_pct = min(100.0, (len(candidate_skills) * 8.0) + (years_exp * 6.0))
+    domain_fit_pct = _domain_context_bonus(cv_text, f"{job_title or ''} {job_description or ''}")
 
     if job_description:
         if GENSIM_AVAILABLE:
             raw_score = (
-                tfidf_pct * 0.24
-                + w2v_pct * 0.12
-                + xgb_score * 0.18
-                + skill_match_pct * 0.28
+                tfidf_pct * 0.21
+                + w2v_pct * 0.10
+                + xgb_score * 0.16
+                + skill_match_pct * 0.30
                 + experience_fit_pct * 0.10
                 + education_fit_pct * 0.05
                 + profile_strength_pct * 0.03
+                + domain_fit_pct * 0.05
             )
         else:
             raw_score = (
-                tfidf_pct * 0.30
+                tfidf_pct * 0.28
                 + xgb_score * 0.20
                 + skill_match_pct * 0.30
                 + experience_fit_pct * 0.12
                 + education_fit_pct * 0.05
                 + profile_strength_pct * 0.03
+                + domain_fit_pct * 0.02
             )
 
         # Calibration: évite le plafonnement artificiel autour de 60.

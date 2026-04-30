@@ -77,6 +77,11 @@ API.interceptors.response.use(
 export const getDashboard = () => API.get('/dashboard/');
 export const getCandidats = () => API.get('/candidates/');
 export const updateCandidate = (id, data) => API.patch(`/candidates/${id}/update/`, data);
+export const deleteCandidate = (id) => API.delete(`/candidates/${id}/delete/`);
+export const getCandidateHistory = (id) => API.get(`/candidates/${id}/history/`);
+export const getWorkflowStatuses = () => API.get('/workflow/statuses/');
+export const getDomains = () => API.get('/domains/');
+export const getDomainCandidates = (id) => API.get(`/domains/${id}/candidates/`);
 
 export const getPostes = () => API.get('/postes/');
 export const createPoste = (data) => API.post('/postes/', data);

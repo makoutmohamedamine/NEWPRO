@@ -21,6 +21,7 @@ export default function Sidebar({ onLogout, currentUser, newCount = 0 }) {
       links: [
         { to: '/',          icon: Icons.dashboard, label: 'Dashbord RH ' },
         { to: '/dossiers',  icon: Icons.dossiers,  label: 'Workflow postes' },
+        { to: '/dossiers-cv',  icon: Icons.dossiers,  label: 'Dossiers CV' },
         { to: '/candidats', icon: Icons.candidats, label: 'Candidats' },
       ],
     },
@@ -90,7 +91,7 @@ export default function Sidebar({ onLogout, currentUser, newCount = 0 }) {
             <div className="sidebar-section-label">{section.section}</div>
             {section.links.map(({ to, icon, label }) => {
               const active = pathname === to;
-              const showBadge = to === '/dossiers' && newCount > 0;
+              const showBadge = (to === '/dossiers' || to === '/dossiers-cv') && newCount > 0;
               return (
                 <Link
                   key={to}

@@ -9,6 +9,18 @@ from sklearn.metrics.pairwise import cosine_similarity
 nltk.download('stopwords', quiet=True)
 nltk.download('punkt', quiet=True)
 
+
+def _post_traiter_texte_extrait(texte):
+    """Nettoie le texte extrait pour limiter le bruit OCR/formatage."""
+    if not texte:
+        return ""
+    texte = texte.replace("\ufb01", "fi").replace("\ufb02", "fl")
+    texte = re.sub(r'(\w)-\n(\w)', r'\1\2', texte)
+    texte = re.sub(r'[\r\f]+', '\n', texte)
+    texte = re.sub(r'\n{3,}', '\n\n', texte)
+    texte = re.sub(r'[ \t]{2,}', ' ', texte)
+    return texte.strip()
+
 # ─── Extraction du texte ───────────────────────────────────────
 
 def extraire_texte_pdf(chemin_fichier):
@@ -25,20 +37,21 @@ def extraire_texte_pdf(chemin_fichier):
                 textes_pages.append(text)
     except Exception as e:
         print(f"Erreur PDF : {e}")
-    texte = "\n".join(textes_pages).strip()
+    texte = _post_traiter_texte_extrait("\n".join(textes_pages))
     if len(texte) < 40:
         print("Avertissement: texte PDF très court extrait (document possiblement scanné).")
     return texte
 
 def extraire_texte_docx(chemin_fichier):
-    texte = ""
+    textes = []
     try:
         doc = docx.Document(chemin_fichier)
         for para in doc.paragraphs:
-            texte += para.text + "\n"
+            if para.text and para.text.strip():
+                textes.append(para.text.strip())
     except Exception as e:
         print(f"Erreur DOCX : {e}")
-    return texte
+    return _post_traiter_texte_extrait("\n".join(textes))
 
 def extraire_texte(chemin_fichier, format_fichier):
     if format_fichier == 'pdf':
@@ -57,7 +70,16 @@ def extraire_email(texte):
 def extraire_telephone(texte):
     pattern = r'(\+?\d[\d\s\-().]{7,}\d)'
     resultats = re.findall(pattern, texte)
-    return resultats[0].strip() if resultats else ""
+    valides = []
+    for brut in resultats:
+        candidat = brut.strip()
+        chiffres = re.sub(r'\D', '', candidat)
+        # Evite de prendre des années ou identifiants courts.
+        if 8 <= len(chiffres) <= 15:
+            valides.append(candidat)
+    if not valides:
+        return ""
+    return max(valides, key=lambda x: len(re.sub(r'\D', '', x)))
 
 def extraire_competences(texte):
     competences_connues = [
@@ -67,6 +89,10 @@ def extraire_competences(texte):
         'docker', 'kubernetes', 'git', 'linux', 'aws', 'azure',
         'html', 'css', 'php', 'laravel', 'nodejs', 'express',
         'data analysis', 'scikit-learn', 'pandas', 'numpy',
+        # Industrie peinture / production
+        'peinture industrielle', 'formulation', 'resine', 'pigment', 'colorimetrie',
+        'controle qualite', 'hse', 'qse', 'lean manufacturing', 'amelioration continue',
+        'maintenance industrielle', 'electromecanique', 'sap',
     ]
     texte_lower = texte.lower()
     trouvees = [c for c in competences_connues if c in texte_lower]

@@ -1,21 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
-import { getCandidats, updateCandidate } from '../api/api';
+import { deleteCandidate, getCandidats, getWorkflowStatuses, updateCandidate } from '../api/api';
 
-const STATUS_OPTIONS = [
-  { value: 'nouveau', label: 'Nouveau' },
-  { value: 'prequalifie', label: 'Pre-qualifie' },
-  { value: 'shortlist', label: 'Shortlist' },
-  { value: 'entretien', label: 'Entretien' },
-  { value: 'finaliste', label: 'Finaliste' },
-  { value: 'offre', label: 'Offre' },
-  { value: 'accepte', label: 'Accepte' },
-  { value: 'refuse', label: 'Refuse' },
-  { value: 'archive', label: 'Archive' },
+const DEFAULT_STATUS_OPTIONS = [
+  { value: 'nouveau', label: 'Nouveau', color: '#b42318' },
+  { value: 'prequalifie', label: 'Pre-qualifie', color: '#ea580c' },
+  { value: 'shortlist', label: 'Shortlist', color: '#0f766e' },
+  { value: 'entretien_rh', label: 'Entretien RH', color: '#1d4ed8' },
+  { value: 'entretien_technique', label: 'Entretien Technique', color: '#4f46e5' },
+  { value: 'validation_manager', label: 'Validation Manager', color: '#7c3aed' },
+  { value: 'accepte', label: 'Accepte', color: '#15803d' },
+  { value: 'refuse', label: 'Refuse', color: '#6b7280' },
 ];
 
-function CandidateCard({ candidate, onStatusChange, onPreviewCv }) {
+function CandidateCard({ candidate, statusOptions, onStatusChange, onPreviewCv, onDelete }) {
   const [saving, setSaving] = useState(false);
   const hasEvaluation = Boolean(candidate.targetJob) && Number(candidate.matchScore || 0) > 0;
+  const currentStatus = statusOptions.find((item) => item.value === candidate.status);
+  const statusColor = currentStatus?.color || '#6b7280';
 
   const handleStatusChange = async (event) => {
     setSaving(true);
@@ -32,7 +33,9 @@ function CandidateCard({ candidate, onStatusChange, onPreviewCv }) {
         <div className="candidate-card-headcopy">
           <div className="candidate-card-name">{candidate.fullName}</div>
           <div className="candidate-card-meta">
-            {candidate.currentTitle || 'Profil non detecte'} • {candidate.targetJob || 'Sans poste cible'}
+            {candidate.domainName ? `${candidate.domainName} - ${candidate.currentTitle || 'Profil'}` : (candidate.currentTitle || 'Profil non detecte')}
+            {' • '}
+            {candidate.targetJob || 'Sans poste cible'}
           </div>
         </div>
         {hasEvaluation ? (
@@ -76,7 +79,14 @@ function CandidateCard({ candidate, onStatusChange, onPreviewCv }) {
         <div className="candidate-detail-card">
           <span className="candidate-detail-label">Workflow</span>
           <strong className="candidate-detail-value">{candidate.workflowStep}</strong>
-          <small>{candidate.statusLabel}</small>
+          <small>
+            <span
+              className="badge"
+              style={{ background: `${statusColor}18`, color: statusColor, border: `1px solid ${statusColor}44` }}
+            >
+              {candidate.statusLabel}
+            </span>
+          </small>
         </div>
       </div>
 
@@ -84,7 +94,7 @@ function CandidateCard({ candidate, onStatusChange, onPreviewCv }) {
         <div className="candidate-action-field">
           <label className="candidate-action-label">Changer le statut</label>
           <select className="form-select" value={candidate.status} onChange={handleStatusChange} disabled={saving}>
-            {STATUS_OPTIONS.map((option) => (
+            {statusOptions.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
@@ -99,6 +109,13 @@ function CandidateCard({ candidate, onStatusChange, onPreviewCv }) {
         >
           Ouvrir le CV
         </button>
+        <button
+          className="btn btn-ghost"
+          type="button"
+          onClick={() => onDelete(candidate)}
+        >
+          Supprimer
+        </button>
       </div>
     </article>
   );
@@ -106,6 +123,7 @@ function CandidateCard({ candidate, onStatusChange, onPreviewCv }) {
 
 export default function Candidats() {
   const [items, setItems] = useState([]);
+  const [statusOptions, setStatusOptions] = useState(DEFAULT_STATUS_OPTIONS);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('all');
@@ -120,6 +138,9 @@ export default function Candidats() {
 
   useEffect(() => {
     load();
+    getWorkflowStatuses()
+      .then((res) => setStatusOptions(res.data?.statuses?.length ? res.data.statuses : DEFAULT_STATUS_OPTIONS))
+      .catch(() => setStatusOptions(DEFAULT_STATUS_OPTIONS));
   }, []);
 
   const filtered = useMemo(() => {
@@ -155,6 +176,15 @@ export default function Candidats() {
     });
   };
 
+  const handleDeleteCandidate = async (candidate) => {
+    const candidateId = candidate.candidateId || candidate.id;
+    if (!candidateId) return;
+    const ok = window.confirm(`Supprimer le candidat ${candidate.fullName || ''} ?`);
+    if (!ok) return;
+    await deleteCandidate(candidateId);
+    setItems((current) => current.filter((item) => (item.candidateId || item.id) !== candidateId));
+  };
+
   return (
     <>
       <div className="page-header">
@@ -169,7 +199,7 @@ export default function Candidats() {
           />
           <select className="form-select" style={{ width: 180 }} value={status} onChange={(event) => setStatus(event.target.value)}>
             <option value="all">Tous les statuts</option>
-            {STATUS_OPTIONS.map((option) => (
+            {statusOptions.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
@@ -203,8 +233,10 @@ export default function Candidats() {
               <CandidateCard
                 key={candidate.id}
                 candidate={candidate}
+                statusOptions={statusOptions}
                 onStatusChange={handleStatusChange}
                 onPreviewCv={handlePreviewCv}
+                onDelete={handleDeleteCandidate}
               />
             ))}
           </div>

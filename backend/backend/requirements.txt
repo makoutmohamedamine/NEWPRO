@@ -15,8 +15,9 @@ python-docx      # Extraction DOCX
 
 # ── Machine Learning / NLP ───────────────────────────────────────────────────────
 scikit-learn     # TF-IDF + cosine_similarity
-nltk             # Stopwords, tokenisationxgboost          # Classification et scoring robuste
-gensim           # Word2Vec embeddings
+nltk             # Stopwords, tokenisation
+xgboost          # Classification et scoring robuste
+# gensim (optionnel) # Word2Vec embeddings - peut nécessiter Visual C++ Build Tools sous Windows
 numpy            # Calculs numériques
 # ── Microsoft Graph API (Outlook O365) ──────────────────────────────────────────
 msal             # Authentification Azure AD (OAuth2 Client Credentials)

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Candidat, CV, Candidature, Poste
+from .models import Candidat, CV, Candidature, Poste, Domaine, CandidatureStatusHistory
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -64,3 +64,28 @@ class CreateUserSerializer(serializers.ModelSerializer):
             instance.set_password(password)
         instance.save()
         return instance
+
+
+class DomaineSerializer(serializers.ModelSerializer):
+    candidats_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Domaine
+        fields = ["id", "nom", "description", "actif", "created_at", "candidats_count"]
+
+
+class CandidatureStatusHistorySerializer(serializers.ModelSerializer):
+    changed_by_name = serializers.CharField(source="changed_by.username", read_only=True)
+
+    class Meta:
+        model = CandidatureStatusHistory
+        fields = [
+            "id",
+            "candidature",
+            "previous_status",
+            "new_status",
+            "comment",
+            "changed_by",
+            "changed_by_name",
+            "changed_at",
+        ]

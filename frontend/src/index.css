@@ -979,6 +979,49 @@ textarea {
   gap: 16px;
 }
 
+.dashboard-v2 {
+  display: grid;
+  gap: 20px;
+  width: 100%;
+  min-width: 0;
+}
+
+.dashboard-v2-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 14px;
+  padding: 20px;
+  border-radius: 18px;
+  color: #fff;
+  background:
+    radial-gradient(circle at top right, rgba(255,255,255,0.15), transparent 26%),
+    linear-gradient(135deg, #1a2033 0%, #7a1c14 58%, #b42318 100%);
+  box-shadow: var(--shadow-md);
+}
+
+.dashboard-v2-hero-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dashboard-v2-tools {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.dashboard-v2-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  gap: 16px;
+  min-width: 0;
+}
+
+.dashboard-v2-grid > * {
+  min-width: 0;
+}
+
 .chart-body {
   padding-top: 12px;
 }
@@ -1377,6 +1420,9 @@ textarea {
   .hero-panel,
   .dashboard-hero-compact,
   .dashboard-grid-2,
+  .dashboard-v2-hero,
+  .dashboard-v2-tools,
+  .dashboard-v2-grid,
   .upload-grid,
   .post-form-grid {
     grid-template-columns: 1fr;
@@ -1407,6 +1453,29 @@ textarea {
   }
 
   .candidate-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-header-wrap {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .dashboard-filter-bar {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .dashboard-filter-select {
+    min-width: 100%;
+  }
+
+  .dashboard-v2-hero {
+    padding: 16px;
+  }
+
+  .dashboard-v2-hero-stats {
     grid-template-columns: 1fr;
   }
 }

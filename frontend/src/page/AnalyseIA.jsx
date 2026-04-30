@@ -282,7 +282,7 @@ export default function AnalyseIA() {
                 background: '#fef3c7', color: '#92400e', borderRadius: 10,
                 padding: '12px 16px', fontSize: '0.85rem', fontWeight: 600,
               }}>
-                ⚠ Clé API Anthropic non configurée. Configurez ANTHROPIC_API_KEY dans le fichier .env du backend.
+                ⚠ {(result.ai_provider || 'IA')} indisponible ({result.groq_error || result.deepseek_error || result.error || 'service non joignable'}). Fallback ML actif.
               </div>
             )}
 
