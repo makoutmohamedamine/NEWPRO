@@ -1,6 +1,7 @@
 from rest_framework import serializers
-from .models import Candidat, CV, Candidature, Poste, Domaine, CandidatureStatusHistory
 from django.contrib.auth import get_user_model
+
+from .models import Candidat, CV, Candidature, Poste, Domaine, CandidatureStatusHistory, Entretien
 
 User = get_user_model()
 
@@ -31,6 +32,27 @@ class CandidatureSerializer(serializers.ModelSerializer):
     class Meta:
         model = Candidature
         fields = '__all__'
+
+
+class EntretienSerializer(serializers.ModelSerializer):
+    candidat_nom = serializers.CharField(source="candidature.candidat.nom", read_only=True)
+    candidat_prenom = serializers.CharField(source="candidature.candidat.prenom", read_only=True)
+    poste_titre = serializers.CharField(source="candidature.poste.titre", read_only=True)
+    type_entretien_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Entretien
+        fields = "__all__"
+
+    def get_type_entretien_label(self, obj):
+        return obj.get_type_entretien_display()
+
+    def validate(self, attrs):
+        debut = attrs.get("debut") or getattr(self.instance, "debut", None)
+        fin = attrs.get("fin") or getattr(self.instance, "fin", None)
+        if debut and fin and fin <= debut:
+            raise serializers.ValidationError({"fin": "L'heure de fin doit être après le début."})
+        return attrs
 
 
 class UserSerializer(serializers.ModelSerializer):

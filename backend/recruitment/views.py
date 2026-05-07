@@ -1,19 +1,35 @@
 import json
 import os
+import re
+import unicodedata
 from datetime import datetime, timedelta
 
 from django.contrib.auth import authenticate, get_user_model
 from django.db.models import Avg, Count, Max, Q
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .ml_classifier import get_classifier
 from .ai_engine import calculer_score_avance
-from .models import Candidat, Candidature, CandidatureStatusHistory, CV, Domaine, EmailLog, Poste, SyncHistory
+from .models import (
+    Candidat,
+    Candidature,
+    CandidatureStatusHistory,
+    ChatConversation,
+    ChatMessage,
+    CV,
+    Domaine,
+    EmailLog,
+    Entretien,
+    Poste,
+    SyncHistory,
+)
 from .serializers import (
     CVSerializer,
     CandidatSerializer,
@@ -21,6 +37,7 @@ from .serializers import (
     CandidatureStatusHistorySerializer,
     CreateUserSerializer,
     DomaineSerializer,
+    EntretienSerializer,
     PosteSerializer,
     UserSerializer,
 )
@@ -236,23 +253,94 @@ def bootstrap_default_domains():
         Domaine.objects.get_or_create(nom=name, defaults={"description": f"Domaine RH: {name}"})
 
 
+def normalize_text(value):
+    text = (value or "").lower()
+    text = "".join(ch for ch in unicodedata.normalize("NFD", text) if unicodedata.category(ch) != "Mn")
+    return " ".join(text.split())
+
+
 def suggest_domain_name_from_text(text):
-    value = (text or "").lower()
+    value = normalize_text(text)
+    if not value:
+        return "Administration"
+
+    def score_keywords(keywords):
+        # Compte les occurrences réelles dans le texte (pas seulement présence unique)
+        # pour réduire les erreurs de classement sur les profils mixtes.
+        return sum(value.count(keyword) for keyword in keywords)
+
     mapping = [
-        ("Production Industrielle", ["industrie", "production", "usine", "peinture", "colorado"]),
-        ("Maintenance", ["maintenance", "electromecanique", "mecanique"]),
-        ("Qualite & Securite", ["qualite", "qse", "hse", "securite"]),
-        ("Informatique & IT", ["it", "informatique", "developpeur", "software", "data"]),
-        ("Ressources Humaines", ["rh", "ressources humaines", "recrutement", "talent"]),
+        (
+            "Production Industrielle",
+            [
+                "industrie",
+                "industriel",
+                "production",
+                "usine",
+                "peinture",
+                "colorado",
+                "ligne de production",
+                "atelier",
+            ],
+        ),
+        (
+            "Maintenance",
+            [
+                "maintenance",
+                "electromecanique",
+                "electrique",
+                "automatismes",
+                "automatises",
+                "mecanique",
+                "machines",
+                "systemes automatises",
+                "maintenance preventive",
+                "maintenance corrective",
+            ],
+        ),
+        ("Qualite & Securite", ["qualite", "qse", "hse", "securite", "hygiene", "audit qualite"]),
+        ("Informatique & IT", ["informatique", "developpeur", "software", "data", "python", "devops", "cloud"]),
+        ("Ressources Humaines", ["ressources humaines", "recrutement", "talent", "gestion des talents"]),
         ("Finance & Comptabilite", ["finance", "comptable", "comptabilite", "controle de gestion"]),
         ("Marketing & Communication", ["marketing", "communication", "brand", "digital"]),
         ("Commerce & Vente", ["commercial", "vente", "sales", "business development"]),
         ("Logistique", ["logistique", "supply chain", "transport", "warehouse"]),
         ("Administration", ["administration", "assistant", "office manager"]),
     ]
+
+    best_domain = "Administration"
+    best_score = 0
     for domain_name, keywords in mapping:
-        if any(keyword in value for keyword in keywords):
-            return domain_name
+        score = score_keywords(keywords)
+        if score > best_score:
+            best_score = score
+            best_domain = domain_name
+
+    # Priorité métier: les profils commerciaux/gestion ne doivent pas basculer
+    # en maintenance à cause de quelques termes techniques dans le contexte.
+    commercial_boost_terms = [
+        "commercial",
+        "responsable commercial",
+        "gestion commerciale",
+        "vente",
+        "marketing",
+        "business development",
+    ]
+    maintenance_terms = [
+        "electromecanique",
+        "maintenance preventive",
+        "maintenance corrective",
+        "systemes automatises",
+        "automatismes",
+        "mecanique",
+    ]
+    commercial_score = score_keywords(commercial_boost_terms)
+    maintenance_score = score_keywords(maintenance_terms)
+    if commercial_score >= 2 and commercial_score >= maintenance_score:
+        return "Commerce & Vente"
+
+    if best_score > 0:
+        return best_domain
     return "Administration"
 
 
@@ -264,6 +352,8 @@ def resolve_domain_for_candidate(poste=None, analysis=None):
             getattr(poste, "departement", "") or "",
             getattr(analysis, "best_profile", "") or "",
             getattr(analysis, "summary", "") or "",
+            getattr(analysis, "raw_text", "") or "",
+            ", ".join(getattr(analysis, "detected_skills", []) or []),
         ]
     )
     name = suggest_domain_name_from_text(source_text)
@@ -272,12 +362,34 @@ def resolve_domain_for_candidate(poste=None, analysis=None):
 
 
 def infer_domain_for_existing_candidate(candidat):
+    best_candidature = candidat.candidatures.select_related("poste").order_by("-score", "-updated_at").first()
+    latest_cv = candidat.cvs.order_by("-created_at").first()
+    if latest_cv and latest_cv.texte_extrait:
+        postes_payload = []
+        if best_candidature and best_candidature.poste:
+            postes_payload = [
+                {
+                    "id": best_candidature.poste.id,
+                    "titre": best_candidature.poste.titre,
+                    "description": best_candidature.poste.description or "",
+                    "competences_requises": best_candidature.poste.competences_requises or "",
+                    "departement": best_candidature.poste.departement or "",
+                }
+            ]
+        groq_domain, _ = grok_recommend_domain(latest_cv.texte_extrait, postes_payload)
+        if groq_domain:
+            return groq_domain
+
     signal = " ".join(
         [
             candidat.current_title or "",
             candidat.resume_profil or "",
             candidat.competences or "",
             candidat.niveau_etudes or "",
+            latest_cv.texte_extrait[:3000] if latest_cv and latest_cv.texte_extrait else "",
+            # Le poste sert d'indice secondaire seulement pour éviter
+            # qu'un mauvais mapping poste écrase le vrai domaine du CV.
+            best_candidature.poste.titre if best_candidature and best_candidature.poste else "",
         ]
     )
     name = suggest_domain_name_from_text(signal)
@@ -347,6 +459,26 @@ def backfill_candidates_domains(request):
         candidat.domaine = domain
         candidat.save(update_fields=["domaine"])
         updated_ids.append(candidat.id)
+    return updated_ids
+
+
+def refresh_candidates_domains(request):
+    queryset = scope_owned_queryset(
+        request,
+        Candidat.objects.prefetch_related("candidatures__poste", "cvs").all(),
+    )
+    updated_ids = []
+    for candidat in queryset:
+        # Eviter un reclassement coûteux à chaque chargement pour les domaines déjà fiables.
+        if candidat.domaine and candidat.domaine.nom not in {"Administration", "Maintenance"}:
+            continue
+        domain = infer_domain_for_existing_candidate(candidat)
+        if not domain:
+            continue
+        if candidat.domaine_id != domain.id:
+            candidat.domaine = domain
+            candidat.save(update_fields=["domaine"])
+            updated_ids.append(candidat.id)
     return updated_ids
 
 
@@ -572,6 +704,7 @@ def candidature_payload(candidature):
         details = {}
     return {
         "id": candidature.id,
+        "candidatureId": candidature.id,
         "candidateId": candidat.id,
         "jobId": candidature.poste_id,
         "fullName": f"{candidat.prenom} {candidat.nom}".strip(),
@@ -609,11 +742,11 @@ def candidature_payload(candidature):
 
 
 def candidate_summary_payload(candidat):
-    # Pour le dashboard et les listes, on expose la meilleure candidature
-    # (score le plus élevé), puis la plus récente en cas d'égalité.
+    # Pour le dashboard et les listes, on expose la candidature la plus
+    # récemment modifiée pour refléter fidèlement les changements de statut.
     candidature = (
         candidat.candidatures.select_related("poste", "assigned_to")
-        .order_by("-score", "-updated_at")
+        .order_by("-updated_at", "-score")
         .first()
     )
     if candidature:
@@ -629,6 +762,7 @@ def candidate_summary_payload(candidat):
     base_score = round(base_score, 1)
     return {
         "id": candidat.id,
+        "candidatureId": None,
         "candidateId": candidat.id,
         "fullName": f"{candidat.prenom} {candidat.nom}".strip(),
         "email": candidat.email,
@@ -868,7 +1002,6 @@ def user_toggle_active(request, pk):
 
 
 @api_view(["GET"])
-@authentication_classes([])
 @permission_classes([AllowAny])
 def dashboard(request):
     try:
@@ -1080,35 +1213,70 @@ def candidate_upload(request):
                 .first()
             )
             if existing_cv and existing_cv.candidat:
-                existing_payload = candidate_summary_payload(existing_cv.candidat)
+                existing_candidate = existing_cv.candidat
+
+                # Si l'utilisateur choisit un poste pendant l'import, on doit
+                # aussi (re)calculer le score pour un CV doublon.
+                if target_job_id:
+                    selected_poste = pick_target_job(
+                        analysis,
+                        explicit_job_id=target_job_id,
+                        owner=request.user if request.user.is_authenticated else None,
+                    )
+                    if selected_poste:
+                        score, details, explanation, grok_used = grok_score_against_poste(
+                            analysis.raw_text or "",
+                            selected_poste,
+                        )
+                        if not grok_used:
+                            score, details, explanation = score_candidate_against_job(analysis, selected_poste)
+                        status = "shortlist" if score >= selected_poste.score_qualification else ("prequalifie" if score >= 50 else "refuse")
+                        Candidature.objects.update_or_create(
+                            candidat=existing_candidate,
+                            poste=selected_poste,
+                            defaults={
+                                "cv": existing_cv,
+                                "statut": status,
+                                "score": score,
+                                "recommandation": recommendation_for_score(score),
+                                "workflow_step": workflow_step_for_status(status),
+                                "source_channel": source,
+                                "explication_score": explanation,
+                                "score_details_json": json.dumps(details),
+                                "sla_due_at": sla_due_for_status(status),
+                                "created_by": request.user if request.user.is_authenticated else None,
+                            },
+                        )
+
+                existing_payload = candidate_summary_payload(existing_candidate)
                 return Response({"candidate": existing_payload, "duplicate": True}, status=200)
 
         groq_repartition = {}
         groq_poste_id = None
-        if not target_job_id:
-            try:
-                postes_for_ai = [
-                    {
-                        "id": p.id,
-                        "titre": p.titre,
-                        "description": p.description or "",
-                        "competences_requises": p.competences_requises or "",
-                        "departement": p.departement or "",
-                    }
-                    for p in Poste.objects.all().order_by("-created_at")[:40]
-                ]
-                groq_repartition = recommander_repartition_cv_groq(
-                    analysis.raw_text or "",
-                    postes_for_ai,
-                    DEFAULT_DOMAIN_NAMES,
-                )
-                if groq_repartition.get("ia_disponible") and groq_repartition.get("poste_titre"):
-                    suggested = str(groq_repartition.get("poste_titre", "")).strip().lower()
-                    poste_match = next((p for p in postes_for_ai if str(p["titre"]).strip().lower() == suggested), None)
-                    if poste_match:
-                        groq_poste_id = str(poste_match["id"])
-            except Exception:
-                groq_repartition = {}
+        postes_for_ai = []
+        try:
+            postes_for_ai = [
+                {
+                    "id": p.id,
+                    "titre": p.titre,
+                    "description": p.description or "",
+                    "competences_requises": p.competences_requises or "",
+                    "departement": p.departement or "",
+                }
+                for p in Poste.objects.all().order_by("-created_at")[:40]
+            ]
+            groq_repartition = recommander_repartition_cv_groq(
+                analysis.raw_text or "",
+                postes_for_ai,
+                DEFAULT_DOMAIN_NAMES,
+            )
+            if (not target_job_id) and groq_repartition.get("ia_disponible") and groq_repartition.get("poste_titre"):
+                suggested = str(groq_repartition.get("poste_titre", "")).strip().lower()
+                poste_match = next((p for p in postes_for_ai if str(p["titre"]).strip().lower() == suggested), None)
+                if poste_match:
+                    groq_poste_id = str(poste_match["id"])
+        except Exception:
+            groq_repartition = {}
 
         # Ne pas bloquer l'import si Grok est indisponible : fallback local pour garder l'app fonctionnelle.
 
@@ -1375,6 +1543,35 @@ class CandidatureViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return scope_owned_queryset(self.request, Candidature.objects.all()).order_by("-updated_at")
+
+
+class EntretienViewSet(viewsets.ModelViewSet):
+    queryset = Entretien.objects.select_related(
+        "candidature", "candidature__candidat", "candidature__poste"
+    ).all()
+    serializer_class = EntretienSerializer
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        scoped = scope_owned_queryset(self.request, Candidature.objects.all())
+        return (
+            Entretien.objects.filter(candidature__in=scoped)
+            .select_related("candidature", "candidature__candidat", "candidature__poste")
+            .order_by("debut")
+        )
+
+    def perform_create(self, serializer):
+        cand = serializer.validated_data["candidature"]
+        if not scope_owned_queryset(self.request, Candidature.objects.filter(pk=cand.pk)).exists():
+            raise PermissionDenied("Candidature non accessible.")
+        serializer.save(created_by=self.request.user if self.request.user.is_authenticated else None)
+
+    def perform_update(self, serializer):
+        cand = serializer.validated_data.get("candidature")
+        if cand is not None and not scope_owned_queryset(self.request, Candidature.objects.filter(pk=cand.pk)).exists():
+            raise PermissionDenied("Candidature non accessible.")
+        serializer.save()
 
 
 @api_view(["GET"])
@@ -1814,6 +2011,8 @@ def workflow_statuses(request):
 @permission_classes([IsAuthenticated])
 def domains_list(request):
     bootstrap_default_domains()
+    # Respecter les affectations manuelles : on complète seulement
+    # les candidats sans domaine, sans reclassement forcé.
     backfill_candidates_domains(request)
     queryset = Domaine.objects.filter(actif=True).annotate(candidats_count=Count("candidats"))
     return Response({"domains": DomaineSerializer(queryset, many=True).data})
@@ -1822,6 +2021,7 @@ def domains_list(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def domain_candidates(request, pk):
+    # Ne pas écraser les déplacements manuels entre dossiers.
     backfill_candidates_domains(request)
     try:
         domaine = Domaine.objects.get(pk=pk, actif=True)
@@ -1839,6 +2039,55 @@ def domain_candidates(request, pk):
     )
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def domain_create(request):
+    name = (request.data.get("nom") or "").strip()
+    description = (request.data.get("description") or "").strip()
+    if not name:
+        return Response({"error": "Le nom du dossier est obligatoire."}, status=400)
+    if len(name) < 2:
+        return Response({"error": "Le nom du dossier est trop court."}, status=400)
+    domain, created = Domaine.objects.get_or_create(
+        nom=name,
+        defaults={"description": description or f"Domaine RH: {name}"},
+    )
+    if not created:
+        return Response({"error": "Ce dossier existe deja."}, status=400)
+    return Response(
+        {
+            "domain": {
+                "id": domain.id,
+                "nom": domain.nom,
+                "description": domain.description,
+                "actif": domain.actif,
+                "created_at": domain.created_at.isoformat() if domain.created_at else None,
+                "candidats_count": 0,
+            }
+        },
+        status=201,
+    )
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def candidate_move_domain(request, pk):
+    domain_id = request.data.get("domainId")
+    if not domain_id:
+        return Response({"error": "domainId est requis."}, status=400)
+    try:
+        candidat = scope_owned_queryset(request, Candidat.objects).get(pk=pk)
+    except Candidat.DoesNotExist:
+        return Response({"error": "Candidat non trouve."}, status=404)
+    try:
+        domain = Domaine.objects.get(pk=domain_id, actif=True)
+    except Domaine.DoesNotExist:
+        return Response({"error": "Dossier cible non trouve."}, status=404)
+    candidat.domaine = domain
+    candidat.save(update_fields=["domaine"])
+    return Response({"candidate": candidate_summary_payload(candidat)})
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def candidate_status_history(request, pk):
@@ -1852,3 +2101,306 @@ def candidate_status_history(request, pk):
     candidatures = candidat.candidatures.all()
     history = CandidatureStatusHistory.objects.filter(candidature__in=candidatures).select_related("changed_by")
     return Response({"history": CandidatureStatusHistorySerializer(history, many=True).data})
+
+
+def _chat_message_to_api_dict(msg):
+    highlights = []
+    suggested_actions = []
+    try:
+        highlights = json.loads(msg.highlights_json or "[]")
+    except Exception:
+        highlights = []
+    try:
+        suggested_actions = json.loads(msg.suggested_actions_json or "[]")
+    except Exception:
+        suggested_actions = []
+    return {
+        "id": msg.id,
+        "role": msg.role,
+        "text": msg.text,
+        "highlights": highlights if isinstance(highlights, list) else [],
+        "suggestedActions": suggested_actions if isinstance(suggested_actions, list) else [],
+        "createdAt": msg.created_at.isoformat() if msg.created_at else None,
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def chat_history(request):
+    cid = (request.GET.get("conversation") or "").strip()
+    if not cid:
+        return Response({"error": "Parametre conversation requis."}, status=400)
+    conv = get_object_or_404(ChatConversation, pk=cid, user=request.user)
+    try:
+        limit = int(request.GET.get("limit", 200))
+    except ValueError:
+        limit = 200
+    limit = max(1, min(limit, 500))
+    qs = (
+        ChatMessage.objects.filter(conversation=conv, user=request.user)
+        .order_by("-created_at")[:limit]
+    )
+    messages = [_chat_message_to_api_dict(m) for m in reversed(list(qs))]
+    return Response({"messages": messages})
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def chat_conversations(request):
+    if request.method == "GET":
+        convs = (
+            ChatConversation.objects.filter(user=request.user)
+            .annotate(message_count=Count("messages"))
+            .order_by("-updated_at")[:120]
+        )
+        out = []
+        for c in convs:
+            last = c.messages.order_by("-created_at").first()
+            title = (c.title or "").strip()
+            if not title and last and last.text:
+                raw = (last.text or "").strip()
+                title = raw[:72] + ("…" if len(raw) > 72 else "")
+            if not title:
+                title = f"Conversation du {c.created_at:%d/%m/%Y %H:%M}"
+            preview = ""
+            if last and last.text:
+                rawp = (last.text or "").strip()
+                preview = rawp[:120] + ("…" if len(rawp) > 120 else "")
+            out.append(
+                {
+                    "id": c.id,
+                    "title": title,
+                    "updatedAt": c.updated_at.isoformat() if c.updated_at else None,
+                    "createdAt": c.created_at.isoformat() if c.created_at else None,
+                    "messageCount": c.message_count,
+                    "preview": preview,
+                }
+            )
+        return Response({"conversations": out})
+
+    title = (request.data.get("title") or "").strip()[:200]
+    c = ChatConversation.objects.create(user=request.user, title=title)
+    return Response(
+        {
+            "conversation": {
+                "id": c.id,
+                "title": (c.title or "").strip() or f"Conversation du {c.created_at:%d/%m/%Y %H:%M}",
+                "updatedAt": c.updated_at.isoformat() if c.updated_at else None,
+                "createdAt": c.created_at.isoformat() if c.created_at else None,
+                "messageCount": 0,
+                "preview": "",
+            }
+        },
+        status=201,
+    )
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def chat_conversation_delete(request, pk):
+    conv = get_object_or_404(ChatConversation, pk=pk, user=request.user)
+    conv.delete()
+    return Response({"ok": True})
+
+
+@api_view(["DELETE", "POST"])
+@permission_classes([IsAuthenticated])
+def chat_history_clear(request):
+    ChatConversation.objects.filter(user=request.user).delete()
+    return Response({"ok": True})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def chat_ask(request):
+    question = (request.data.get("question") or "").strip()
+    if not question:
+        return Response({"error": "Question requise."}, status=400)
+
+    conv_id = request.data.get("conversationId")
+    if conv_id:
+        conv = get_object_or_404(ChatConversation, pk=conv_id, user=request.user)
+    else:
+        conv = ChatConversation.objects.create(user=request.user, title="")
+
+    history_msgs = list(
+        ChatMessage.objects.filter(conversation=conv, user=request.user).order_by("-created_at")[:36]
+    )
+    history_msgs.reverse()
+    lines = []
+    for hm in history_msgs:
+        label = "Utilisateur" if hm.role == ChatMessage.ROLE_USER else "Assistant"
+        t = (hm.text or "").replace("\n", " ").strip()[:1200]
+        lines.append(f"- {label}: {t}")
+    history_block = (
+        "\n".join(lines) if lines else "(aucun message precedent dans cette conversation)"
+    )
+
+    ChatMessage.objects.create(
+        user=request.user,
+        conversation=conv,
+        role=ChatMessage.ROLE_USER,
+        text=question,
+    )
+
+    new_title = ((conv.title or "").strip() or question)[:200]
+    ChatConversation.objects.filter(pk=conv.pk).update(title=new_title, updated_at=timezone.now())
+
+    try:
+        from .ai_deepseek import _call_groq
+
+        base_candidates_qs = scope_owned_queryset(
+            request,
+            Candidat.objects.prefetch_related("candidatures__poste", "cvs"),
+        )
+        candidates_qs = base_candidates_qs.order_by("-created_at")[:120]
+        postes_qs = scope_owned_queryset(request, Poste.objects.all()).order_by("-created_at")[:40]
+        domains_qs = Domaine.objects.filter(actif=True).order_by("nom")
+
+        def candidat_chat_row(candidat_obj):
+            payload = candidate_summary_payload(candidat_obj)
+            phone = (payload.get("phone") or "").strip()
+            return {
+                "id": payload.get("candidateId") or payload.get("id"),
+                "nom": payload.get("fullName"),
+                "email": (payload.get("email") or "").strip(),
+                "telephone": phone or None,
+                "poste": payload.get("targetJob") or "",
+                "domaine": payload.get("domainName") or "",
+                "statut": payload.get("statusLabel"),
+                "score": payload.get("matchScore"),
+                "localisation": (payload.get("location") or "").strip(),
+                "titre_professionnel": (payload.get("currentTitle") or "").strip(),
+                "annees_experience": payload.get("yearsExperience"),
+                "niveau_etudes": (payload.get("educationLevel") or "").strip(),
+                "resume_court": ((payload.get("summary") or "").strip())[:400],
+            }
+
+        candidate_rows = [candidat_chat_row(c) for c in candidates_qs]
+        seen_ids = {row["id"] for row in candidate_rows}
+
+        q_lower = question.lower()
+        tokens = {m.group(0) for m in re.finditer(r"[\wÀ-ÿ'-]{3,}", q_lower, flags=re.UNICODE)}
+        stop = {
+            "les", "des", "une", "pour", "avec", "dans", "sur", "est", "son", "ses", "leur", "veux",
+            "donne", "donner", "liste", "candidat", "candidats", "numero", "telephone", "email",
+            "mail", "infos", "information", "informations", "toutes", "tous", "qui", "que", "quoi",
+            "comment", "merci", "bonjour", "salut",
+        }
+        name_tokens = [t for t in tokens if t not in stop and not t.isdigit()]
+        name_q = Q()
+        for t in name_tokens[:12]:
+            name_q |= Q(nom__icontains=t) | Q(prenom__icontains=t)
+        if name_q:
+            boosted = (
+                base_candidates_qs.filter(name_q)
+                .order_by("-created_at")
+                .distinct()[:30]
+            )
+            boosted_rows = []
+            for c in boosted:
+                row = candidat_chat_row(c)
+                rid = row["id"]
+                if rid not in seen_ids:
+                    seen_ids.add(rid)
+                    boosted_rows.append(row)
+            candidate_rows = boosted_rows + candidate_rows
+
+        poste_rows = [
+            {
+                "id": p.id,
+                "titre": p.titre,
+                "departement": p.departement,
+                "priorite": p.niveau_priorite,
+                "seuil": p.score_qualification,
+            }
+            for p in postes_qs
+        ]
+        domain_rows = [{"id": d.id, "nom": d.nom, "actif": d.actif} for d in domains_qs]
+
+        system_prompt = (
+            "Tu es TalentMatch IA, assistant intelligent pour des recruteurs RH connectés à leur base interne. "
+            "Tu réponds en français, clairement. "
+            "Si la question concerne les candidats/postes/domaines, appuie-toi prioritairement sur le contexte JSON fourni. "
+            "Le contexte candidats contient notamment email et telephone lorsqu'ils sont enregistrés : "
+            "tu DOIS les citer tels quels si l'utilisateur les demande et qu'ils figurent dans le contexte pour la bonne personne. "
+            "Si un champ est absent ou null pour un candidat, dis simplement qu'il n'est pas renseigné en base (ne pas inventer). "
+            "Si la question est générale, réponds avec des connaissances utiles. "
+            "N'invente pas de scores, noms ou coordonnées qui ne sont pas dans le contexte. "
+            "Tu réponds uniquement en JSON valide."
+        )
+        user_prompt = (
+            "Retourne EXACTEMENT ce JSON:\n"
+            "{\n"
+            '  "answer": "réponse claire pour l’utilisateur",\n'
+            '  "highlights": ["point 1", "point 2"],\n'
+            '  "suggestedActions": ["action 1", "action 2"]\n'
+            "}\n\n"
+            "Historique recent de cette conversation (coherence du fil; ne pas repeter mot pour mot si inutile):\n"
+            f"{history_block}\n\n"
+            f"Question utilisateur actuelle: {question}\n\n"
+            "Contexte candidats:\n"
+            f"{json.dumps(candidate_rows, ensure_ascii=False)}\n\n"
+            "Contexte postes:\n"
+            f"{json.dumps(poste_rows, ensure_ascii=False)}\n\n"
+            "Contexte domaines:\n"
+            f"{json.dumps(domain_rows, ensure_ascii=False)}\n"
+        )
+
+        llm = _call_groq(system_prompt, user_prompt, max_tokens=1400)
+        if not llm.get("ok"):
+            fail_answer = "Le service IA est temporairement indisponible. Reessayez dans un instant."
+            ChatMessage.objects.create(
+                user=request.user,
+                conversation=conv,
+                role=ChatMessage.ROLE_ASSISTANT,
+                text=fail_answer,
+                highlights_json="[]",
+                suggested_actions_json="[]",
+            )
+            ChatConversation.objects.filter(pk=conv.pk).update(updated_at=timezone.now())
+            return Response(
+                {
+                    "answer": fail_answer,
+                    "highlights": [],
+                    "suggestedActions": [],
+                    "ai_provider": llm.get("provider", "Grok"),
+                    "conversationId": conv.id,
+                },
+                status=200,
+            )
+
+        data = llm.get("data") or {}
+        answer_text = data.get("answer") or "Je n'ai pas de réponse exploitable pour le moment."
+        highlights = data.get("highlights") or []
+        suggested = data.get("suggestedActions") or []
+        ChatMessage.objects.create(
+            user=request.user,
+            conversation=conv,
+            role=ChatMessage.ROLE_ASSISTANT,
+            text=answer_text,
+            highlights_json=json.dumps(highlights, ensure_ascii=False),
+            suggested_actions_json=json.dumps(suggested, ensure_ascii=False),
+        )
+        ChatConversation.objects.filter(pk=conv.pk).update(updated_at=timezone.now())
+        return Response(
+            {
+                "answer": answer_text,
+                "highlights": highlights,
+                "suggestedActions": suggested,
+                "ai_provider": llm.get("provider", "Grok"),
+                "conversationId": conv.id,
+            }
+        )
+    except Exception as exc:
+        err_msg = f"Erreur chatbot: {exc}"
+        ChatMessage.objects.create(
+            user=request.user,
+            conversation=conv,
+            role=ChatMessage.ROLE_ASSISTANT,
+            text=err_msg,
+            highlights_json="[]",
+            suggested_actions_json="[]",
+        )
+        ChatConversation.objects.filter(pk=conv.pk).update(updated_at=timezone.now())
+        return Response({"error": err_msg, "conversationId": conv.id}, status=500)

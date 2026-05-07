@@ -161,6 +161,44 @@ class Candidature(models.Model):
         ordering = ["-score", "-updated_at"]
 
 
+class Entretien(models.Model):
+    TYPE_CHOICES = [
+        ("rh", "Entretien RH"),
+        ("technique", "Entretien technique"),
+        ("final", "Entretien final"),
+        ("autre", "Autre"),
+    ]
+
+    candidature = models.ForeignKey(
+        Candidature,
+        on_delete=models.CASCADE,
+        related_name="entretiens",
+    )
+    titre = models.CharField(max_length=200, blank=True)
+    type_entretien = models.CharField(max_length=20, choices=TYPE_CHOICES, default="rh")
+    debut = models.DateTimeField()
+    fin = models.DateTimeField()
+    lieu = models.CharField(max_length=255, blank=True)
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="entretiens_planifies",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "interviews"
+        ordering = ["debut"]
+
+    def __str__(self):
+        label = self.titre or self.get_type_entretien_display()
+        return f"{label} — {self.debut:%Y-%m-%d %H:%M}"
+
+
 class CandidatureStatusHistory(models.Model):
     candidature = models.ForeignKey(Candidature, on_delete=models.CASCADE, related_name="status_history")
     previous_status = models.CharField(max_length=30, blank=True)
@@ -251,3 +289,64 @@ class SyncHistory(models.Model):
 
     def __str__(self):
         return f"Sync {self.started_at:%Y-%m-%d %H:%M} - {self.cvs_created} crees / {self.cvs_error} erreurs"
+
+
+class ChatConversation(models.Model):
+    """Fil de discussion Chat RH (plusieurs conversations par utilisateur)."""
+
+    user = models.ForeignKey(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name="chat_conversations",
+        db_index=True,
+    )
+    title = models.CharField(max_length=200, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "chat_conversations"
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return f"{self.user_id} — {self.title or 'Sans titre'} ({self.created_at:%Y-%m-%d})"
+
+
+class ChatMessage(models.Model):
+    """Message dans une conversation Chat RH."""
+
+    ROLE_USER = "user"
+    ROLE_ASSISTANT = "assistant"
+    ROLE_CHOICES = [
+        (ROLE_USER, "Utilisateur"),
+        (ROLE_ASSISTANT, "Assistant"),
+    ]
+
+    user = models.ForeignKey(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name="chat_messages",
+        db_index=True,
+    )
+    conversation = models.ForeignKey(
+        ChatConversation,
+        on_delete=models.CASCADE,
+        related_name="messages",
+    )
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    text = models.TextField()
+    highlights_json = models.TextField(blank=True, default="[]")
+    suggested_actions_json = models.TextField(blank=True, default="[]")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "chat_messages"
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["conversation", "created_at"]),
+        ]
+
+    def __str__(self):
+        preview = (self.text or "")[:60]
+        return f"{self.user_id} {self.role} {self.created_at:%Y-%m-%d %H:%M} {preview!r}"

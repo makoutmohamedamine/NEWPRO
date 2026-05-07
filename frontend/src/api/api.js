@@ -82,6 +82,22 @@ export const getCandidateHistory = (id) => API.get(`/candidates/${id}/history/`)
 export const getWorkflowStatuses = () => API.get('/workflow/statuses/');
 export const getDomains = () => API.get('/domains/');
 export const getDomainCandidates = (id) => API.get(`/domains/${id}/candidates/`);
+export const createDomain = (data) => API.post('/domains/create/', data);
+export const moveCandidateDomain = (candidateId, domainId) =>
+  API.patch(`/candidates/${candidateId}/move-domain/`, { domainId });
+export const getChatConversations = () => API.get('/chat/conversations/');
+export const createChatConversation = (data = {}) => API.post('/chat/conversations/', data);
+export const deleteChatConversation = (id) => API.delete(`/chat/conversations/${id}/`);
+export const askChatRH = (question, conversationId) =>
+  API.post('/chat/ask/', { question, conversationId });
+export const getChatHistory = (params) => API.get('/chat/history/', { params });
+export const clearChatHistory = () => API.delete('/chat/history/clear/');
+
+export const getCandidatures = () => API.get('/candidatures/');
+export const getEntretiens = () => API.get('/entretiens/');
+export const createEntretien = (data) => API.post('/entretiens/', data);
+export const updateEntretien = (id, data) => API.patch(`/entretiens/${id}/`, data);
+export const deleteEntretien = (id) => API.delete(`/entretiens/${id}/`);
 
 export const getPostes = () => API.get('/postes/');
 export const createPoste = (data) => API.post('/postes/', data);
