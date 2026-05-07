@@ -1,405 +1,363 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import CVUpload from '../components/CVUpload';
 import OutlookSync from '../components/OutlookSync';
-import { getDashboard } from '../api/api';
+import {
+  getDashboard,
+  getGmailDebug,
+  getGmailStatus,
+  triggerGmailSync,
+} from '../api/api';
 
-const STATUS_COLORS = {
-  nouveau: '#b42318',
-  prequalifie: '#c2410c',
-  shortlist: '#0f766e',
-  entretien_rh: '#1d4ed8',
-  entretien_technique: '#4f46e5',
-  validation_manager: '#7c3aed',
-  entretien: '#1d4ed8',
-  finaliste: '#7c3aed',
-  offre: '#166534',
-  accepte: '#15803d',
-  refuse: '#6b7280',
-  archive: '#94a3b8',
-  en_cours: '#d97706',
-};
+function toNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+}
 
-const PIE_COLORS = ['#b42318', '#0f766e', '#1d4ed8', '#7c3aed', '#c2410c', '#334155'];
-const CLOSED_STATUSES = new Set(['accepte', 'refuse', 'archive']);
-
-const readField = (obj, ...keys) => {
-  for (const key of keys) {
-    if (obj?.[key] !== undefined && obj?.[key] !== null) return obj[key];
-  }
-  return undefined;
-};
-
-const toNumber = (value, fallback = 0) => {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : fallback;
-};
-
-const parseDate = (value) => {
-  if (!value) return null;
-  const ts = new Date(value).getTime();
-  return Number.isNaN(ts) ? null : ts;
-};
-
-const normalizeCandidate = (raw = {}, index = 0) => ({
-  id: readField(raw, 'id', 'candidateId', 'candidate_id') ?? `cand-${index}`,
-  fullName: readField(raw, 'fullName', 'full_name', 'name') || [raw?.prenom, raw?.nom].filter(Boolean).join(' ') || 'Candidat',
-  email: readField(raw, 'email', 'mail') || '-',
-  targetJob: readField(raw, 'targetJob', 'target_job', 'poste', 'profileLabel') || '',
-  workflowStep: readField(raw, 'workflowStep', 'workflow_step') || 'Evaluation RH',
-  recommendation: readField(raw, 'recommendation', 'recommandation') || 'A evaluer',
-  status: readField(raw, 'status', 'statut') || 'nouveau',
-  statusLabel: readField(raw, 'statusLabel', 'status_label') || 'Nouveau',
-  matchScore: toNumber(readField(raw, 'matchScore', 'score', 'score_global')),
-  slaDueAt: readField(raw, 'slaDueAt', 'sla_due_at') || null,
-  createdAt: readField(raw, 'createdAt', 'created_at') || null,
-  updatedAt: readField(raw, 'updatedAt', 'updated_at') || null,
-});
-
-const normalizePayload = (payload = {}) => {
-  const candidates = Array.isArray(payload?.candidates) ? payload.candidates.map(normalizeCandidate) : [];
-  return {
-    ...payload,
-    candidates,
-    topCandidates: Array.isArray(payload?.topCandidates) ? payload.topCandidates.map(normalizeCandidate) : [],
-    slaAlerts: Array.isArray(payload?.slaAlerts) ? payload.slaAlerts.map(normalizeCandidate) : [],
-    funnel: Array.isArray(payload?.funnel) ? payload.funnel : [],
-    scoreDistribution: Array.isArray(payload?.scoreDistribution) ? payload.scoreDistribution : [],
-    jobsOverview: Array.isArray(payload?.jobsOverview)
-      ? payload.jobsOverview.map((job) => ({
-          ...job,
-          candidateCount: toNumber(job?.candidateCount),
-          qualifiedCount: toNumber(job?.qualifiedCount),
-          avgScore: toNumber(job?.avgScore),
-        }))
-      : [],
-    profileDistribution: payload?.profileDistribution || {},
-  };
-};
-
-function MetricCard({ title, value, subtitle, color }) {
+function StatCard({ label, value, sub, color }) {
   return (
-    <article className="kpi-card" style={{ '--kpi-color': color }}>
+    <article className="kpi-card" style={{ '--kpi-color': color || '#b42318' }}>
       <div className="kpi-value">{value}</div>
-      <div className="kpi-label">{title}</div>
-      <div className="kpi-sub">{subtitle}</div>
+      <div className="kpi-label">{label}</div>
+      {sub ? <div className="kpi-sub">{sub}</div> : null}
     </article>
   );
 }
 
-function ScorePill({ score }) {
-  const value = toNumber(score);
-  const tone = value >= 85 ? '#15803d' : value >= 70 ? '#0f766e' : value >= 50 ? '#c2410c' : '#b42318';
-  return (
-    <span className="score-pill" style={{ color: tone, borderColor: `${tone}33`, background: `${tone}12` }}>
-      {value.toFixed(1)}%
-    </span>
-  );
-}
-
 export default function Dashboard() {
-  const [data, setData] = useState(null);
+  const [dashboard, setDashboard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [dateRange, setDateRange] = useState('all');
-  const [dateSort, setDateSort] = useState('desc');
+  const [gmailStatus, setGmailStatus] = useState(null);
+  const [gmailSyncing, setGmailSyncing] = useState(false);
+  const [gmailMessage, setGmailMessage] = useState('');
 
-  const load = () => {
-    setLoading(true);
-    setError('');
-    getDashboard()
-      .then((res) => setData(normalizePayload(res.data)))
-      .catch((err) => setError(err?.response?.data?.error || 'Impossible de charger le dashboard.'))
-      .finally(() => setLoading(false));
-  };
+  const loadGmailConnection = useCallback(async () => {
+    try {
+      const gmailRes = await getGmailStatus();
+      const statusData = gmailRes?.data || null;
+      if (statusData?.connection?.status === 'ok') {
+        setGmailStatus(statusData);
+        return statusData;
+      }
+    } catch (_err) {
+      // Fallback on debug endpoint when status is unavailable.
+    }
 
-  useEffect(() => {
-    load();
+    try {
+      const debugRes = await getGmailDebug();
+      const debugData = debugRes?.data || {};
+      const normalized = {
+        connection: debugData.connection || { status: 'error' },
+        syncHistory: [],
+        emailLogs: [],
+        totalEmailsProcessed: toNumber(debugData.already_processed),
+        totalSyncs: 0,
+      };
+      setGmailStatus(normalized);
+      return normalized;
+    } catch (_err) {
+      const disconnected = { connection: { status: 'error' } };
+      setGmailStatus(disconnected);
+      return disconnected;
+    }
   }, []);
 
-  const stats = data?.stats || {};
-  const profileDistribution = useMemo(
-    () => Object.entries(data?.profileDistribution || {}).map(([name, value]) => ({ name, value })),
-    [data]
+  const gmailConnected = gmailStatus?.connection?.status === 'ok' && Boolean(gmailStatus?.connection?.mailbox);
+
+  const loadDashboard = useCallback(async () => {
+    setError('');
+    setLoading(true);
+    try {
+      const [dashRes] = await Promise.all([getDashboard(), loadGmailConnection()]);
+      setDashboard(dashRes.data || {});
+    } catch (err) {
+      setError(err?.response?.data?.error || 'Impossible de charger le dashboard.');
+    } finally {
+      setLoading(false);
+    }
+  }, [loadGmailConnection]);
+
+  useEffect(() => {
+    loadDashboard();
+  }, [loadDashboard]);
+
+  const handleGmailSync = async () => {
+    setGmailSyncing(true);
+    setGmailMessage('');
+    try {
+      const res = await triggerGmailSync();
+      const report = res.data || {};
+      setGmailMessage(
+        report.success
+          ? `Sync Gmail terminee: ${toNumber(report.cvsCreated)} CV crees, ${toNumber(report.cvsFound)} trouves.`
+          : report.errors?.[0] || 'Echec de la synchronisation Gmail.'
+      );
+      await loadGmailConnection();
+      await loadDashboard();
+    } catch (err) {
+      setGmailMessage(
+        err?.response?.data?.error ||
+        err?.response?.data?.detail ||
+        'Echec de la synchronisation Gmail.'
+      );
+    } finally {
+      setGmailSyncing(false);
+    }
+  };
+
+  const stats = dashboard?.stats || {};
+  const topCandidates = dashboard?.topCandidates || [];
+  const jobsOverview = dashboard?.jobsOverview || [];
+  const scoreDistribution = dashboard?.scoreDistribution || [];
+  const slaAlerts = dashboard?.slaAlerts || [];
+
+  const cards = useMemo(
+    () => [
+      {
+        to: '/dossiers-cv',
+        title: 'Dossiers CV',
+        description: 'Consulter tous les CV classes automatiquement par domaine.',
+        cta: 'Voir dossiers CV',
+      },
+      {
+        to: '/candidats',
+        title: 'Candidats',
+        description: 'Mettre a jour les statuts, visualiser les CV et supprimer si besoin.',
+        cta: 'Gerer candidats',
+      },
+      {
+        to: '/postes',
+        title: 'Fiches de poste',
+        description: 'Creer, modifier et suivre les postes avec leurs seuils de qualification.',
+        cta: 'Gerer postes',
+      },
+      {
+        to: '/analyse-ia',
+        title: 'Analyse IA',
+        description: 'Lancer une analyse IA manuelle de CV et scoring avance.',
+        cta: 'Lancer analyse IA',
+      },
+      {
+        to: '/utilisateurs',
+        title: 'Utilisateurs',
+        description: 'Administrer les comptes et les droits de l application.',
+        cta: 'Administrer',
+      },
+    ],
+    []
   );
-  const jobsOverview = Array.isArray(data?.jobsOverview) ? data.jobsOverview : [];
-  const funnel = Array.isArray(data?.funnel) ? data.funnel : [];
-  const scoreDistribution = Array.isArray(data?.scoreDistribution) ? data.scoreDistribution : [];
-  const allCandidates = useMemo(() => (Array.isArray(data?.candidates) ? data.candidates : []), [data]);
-
-  const filteredCandidates = useMemo(() => {
-    const now = Date.now();
-    const rangeMsMap = { '7d': 7 * 86400000, '30d': 30 * 86400000, '90d': 90 * 86400000 };
-    const rangeMs = rangeMsMap[dateRange] || null;
-
-    return [...allCandidates]
-      .filter((candidate) => {
-        if (!rangeMs) return true;
-        const ts = parseDate(candidate.updatedAt || candidate.createdAt);
-        if (!ts) return true;
-        return now - ts <= rangeMs;
-      })
-      .sort((a, b) => {
-        const ta = parseDate(a.updatedAt || a.createdAt) || 0;
-        const tb = parseDate(b.updatedAt || b.createdAt) || 0;
-        return dateSort === 'asc' ? ta - tb : tb - ta;
-      });
-  }, [allCandidates, dateRange, dateSort]);
-
-  const topCandidates = useMemo(() => {
-    if (Array.isArray(data?.topCandidates) && data.topCandidates.length) return data.topCandidates.slice(0, 6);
-    return [...filteredCandidates].sort((a, b) => b.matchScore - a.matchScore).slice(0, 6);
-  }, [data, filteredCandidates]);
-
-  const alerts = useMemo(() => {
-    if (Array.isArray(data?.slaAlerts) && data.slaAlerts.length) return data.slaAlerts.slice(0, 6);
-    return filteredCandidates.filter((c) => c.slaDueAt && !CLOSED_STATUSES.has(c.status)).slice(0, 6);
-  }, [data, filteredCandidates]);
-
-  const lastSyncDate = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
-
-  if (loading) {
-    return (
-      <>
-        <div className="page-header">
-          <span className="page-header-title">Dashboard recrutement</span>
-        </div>
-        <div className="page-content empty-state">
-          <div className="spinner" style={{ margin: '0 auto 12px' }} />
-          Chargement des donnees...
-        </div>
-      </>
-    );
-  }
-
-  if (error) {
-    return (
-      <>
-        <div className="page-header">
-          <span className="page-header-title">Dashboard recrutement</span>
-        </div>
-        <div className="page-content">
-          <div className="alert alert-error" style={{ marginBottom: 16 }}>{error}</div>
-          <button className="btn btn-primary" onClick={load}>Reessayer</button>
-        </div>
-      </>
-    );
-  }
 
   return (
     <>
       <div className="page-header">
-        <span className="page-header-title">Dashboard recrutement</span>
-        <div className="page-header-right dashboard-header-wrap">
-          <div className="dashboard-filter-bar">
-            <select className="dashboard-filter-select" value={dateRange} onChange={(e) => setDateRange(e.target.value)}>
-              <option value="all">Toutes les dates</option>
-              <option value="7d">7 derniers jours</option>
-              <option value="30d">30 derniers jours</option>
-              <option value="90d">90 derniers jours</option>
-            </select>
-            <select className="dashboard-filter-select" value={dateSort} onChange={(e) => setDateSort(e.target.value)}>
-              <option value="desc">Plus recent d'abord</option>
-              <option value="asc">Plus ancien d'abord</option>
-            </select>
-          </div>
-          <button className="btn btn-ghost btn-sm" onClick={load}>Actualiser</button>
+        <span className="page-header-title">TalentMatch IA</span>
+        <div className="page-header-right">
+          <button className="btn btn-ghost" type="button" onClick={loadDashboard}>
+            Actualiser
+          </button>
         </div>
       </div>
 
       <div className="page-content dashboard-v2">
-        <section className="dashboard-v2-hero">
-          <div>
-            <div className="hero-eyebrow">Vue operationnelle</div>
-            <h1 className="hero-title compact">Pilotage en temps reel des candidatures.</h1>
-            <p className="hero-copy compact">
-              Donnees synchronisees avec l'API: candidats, pipeline, postes, alertes de traitement et performance de matching.
-            </p>
+        {loading ? (
+          <div className="empty-state">
+            <div className="spinner" style={{ margin: '0 auto 12px' }} />
+            Chargement du dashboard...
           </div>
-          <div className="dashboard-v2-hero-stats">
-            <div className="hero-mini-stat">
-              <strong>{toNumber(stats.totalCandidates)}</strong>
-              <span>candidats</span>
-            </div>
-            <div className="hero-mini-stat">
-              <strong>{toNumber(stats.openJobs)}</strong>
-              <span>postes ouverts</span>
-            </div>
-            <div className="hero-mini-stat">
-              <strong>{toNumber(stats.overdueActions)}</strong>
-              <span>alertes SLA</span>
-            </div>
-            <div className="hero-mini-stat">
-              <strong>{lastSyncDate}</strong>
-              <span>derniere vue</span>
-            </div>
-          </div>
-        </section>
-
-        <section className="kpi-grid">
-          <MetricCard title="Candidatures" value={toNumber(stats.totalApplications)} subtitle="volume total traite" color="#0f766e" />
-          <MetricCard title="Score moyen" value={`${toNumber(stats.averageScore).toFixed(1)}%`} subtitle="qualite moyenne" color="#1d4ed8" />
-          <MetricCard title="Entretiens" value={toNumber(stats.interviewsCount)} subtitle="phases actives" color="#7c3aed" />
-          <MetricCard title="Acceptes" value={toNumber(stats.acceptedCandidates)} subtitle="dossiers conclus" color="#15803d" />
-          <MetricCard title="Nouveaux" value={toNumber(stats.newCandidates)} subtitle="a traiter" color="#b42318" />
-          <MetricCard title="Delai moyen" value={`${toNumber(stats.processingDelayHours).toFixed(1)} h`} subtitle="temps de traitement" color="#c2410c" />
-        </section>
-
-        <section className="dashboard-v2-tools">
-          <CVUpload onUploadSuccess={load} />
-          <OutlookSync onSyncSuccess={load} />
-        </section>
-
-        <section className="dashboard-v2-grid">
-          <div className="card">
-            <div className="card-header">
-              <span className="card-title">Pipeline de recrutement</span>
-            </div>
-            <div className="card-body chart-body">
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={funnel}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                  <YAxis allowDecimals={false} />
-                  <Tooltip />
-                  <Bar dataKey="count" radius={[8, 8, 0, 0]}>
-                    {funnel.map((item) => (
-                      <Cell key={item.key} fill={STATUS_COLORS[item.key] || '#1f2937'} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="card-header">
-              <span className="card-title">Repartition par profils</span>
-            </div>
-            <div className="card-body chart-body">
-              <ResponsiveContainer width="100%" height={280}>
-                <PieChart>
-                  <Pie data={profileDistribution} dataKey="value" nameKey="name" innerRadius={58} outerRadius={95}>
-                    {profileDistribution.map((item, index) => (
-                      <Cell key={`${item.name}-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </section>
-
-        <section className="dashboard-v2-grid">
-          <div className="card">
-            <div className="card-header">
-              <span className="card-title">Distribution des scores</span>
-            </div>
-            <div className="card-body">
-              <div className="score-band-list">
-                {scoreDistribution.map((band) => (
-                  <div key={band.label} className="score-band-row">
-                    <div>
-                      <div className="score-band-label">{band.label}</div>
-                      <div className="score-band-subtitle">candidatures</div>
-                    </div>
-                    <strong>{toNumber(band.count)}</strong>
-                  </div>
-                ))}
+        ) : error ? (
+          <div className="alert alert-error">{error}</div>
+        ) : (
+          <>
+            <section className="dashboard-v2-hero">
+              <div>
+                <div className="hero-eyebrow">Pilotage global</div>
+                <h1 className="hero-title compact">Toutes les actions de recrutement en un seul ecran</h1>
+                <p className="hero-copy compact">
+                  Importez des CV, synchronisez vos boites mail, suivez les statuts et accedez rapidement a chaque module de l application.
+                </p>
               </div>
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="card-header">
-              <span className="card-title">Alertes prioritaires</span>
-            </div>
-            <div className="card-body">
-              {alerts.length === 0 ? (
-                <div className="empty-state" style={{ padding: '20px 12px' }}>Aucune alerte active.</div>
-              ) : (
-                <div className="alert-list">
-                  {alerts.map((candidate) => (
-                    <div key={candidate.id} className="alert-item">
-                      <div>
-                        <div className="alert-item-title">{candidate.fullName}</div>
-                        <div className="alert-item-subtitle">{candidate.targetJob || 'Poste non defini'} - {candidate.workflowStep}</div>
-                      </div>
-                      <ScorePill score={candidate.matchScore} />
-                    </div>
-                  ))}
+              <div className="dashboard-v2-hero-stats">
+                <div className="hero-mini-stat">
+                  <strong>{toNumber(stats.totalCandidates)}</strong>
+                  <span>Candidats total</span>
                 </div>
-              )}
-            </div>
-          </div>
-        </section>
+                <div className="hero-mini-stat">
+                  <strong>{toNumber(stats.openJobs)}</strong>
+                  <span>Postes ouverts</span>
+                </div>
+                <div className="hero-mini-stat">
+                  <strong>{toNumber(stats.interviewsCount)}</strong>
+                  <span>Entretiens en cours</span>
+                </div>
+                <div className="hero-mini-stat">
+                  <strong>{toNumber(stats.overdueActions)}</strong>
+                  <span>Actions en retard</span>
+                </div>
+              </div>
+            </section>
 
-        <section className="dashboard-v2-grid">
-          <div className="card">
-            <div className="card-header">
-              <span className="card-title">Top candidats</span>
-            </div>
-            <div className="table-scroll">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Candidat</th>
-                    <th>Poste</th>
-                    <th>Statut</th>
-                    <th>Score</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topCandidates.map((candidate) => (
-                    <tr key={candidate.id}>
-                      <td>
-                        <div className="table-name">{candidate.fullName}</div>
-                        <div className="table-subtext">{candidate.email}</div>
-                      </td>
-                      <td>{candidate.targetJob || '-'}</td>
-                      <td><span className="badge badge-gray">{candidate.statusLabel}</span></td>
-                      <td><ScorePill score={candidate.matchScore} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+            <section className="kpi-grid">
+              <StatCard label="Candidatures" value={toNumber(stats.totalApplications)} sub="Total traitees" color="#b42318" />
+              <StatCard label="Nouveaux" value={toNumber(stats.newCandidates)} sub="A qualifier" color="#ea580c" />
+              <StatCard label="Qualifies" value={toNumber(stats.qualifiedCandidates)} sub="Score >= 70%" color="#15803d" />
+              <StatCard label="Score moyen" value={`${toNumber(stats.averageScore).toFixed(1)}%`} sub={`Meilleur ${toNumber(stats.bestScore).toFixed(1)}%`} color="#1d4ed8" />
+            </section>
 
-          <div className="card">
-            <div className="card-header">
-              <span className="card-title">Couverture des postes</span>
-            </div>
-            <div className="table-scroll">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Poste</th>
-                    <th>Priorite</th>
-                    <th>Candidatures</th>
-                    <th>Qualifies</th>
-                    <th>Score moyen</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {jobsOverview.map((job) => (
-                    <tr key={job.id}>
-                      <td>
-                        <div className="table-name">{job.name}</div>
-                        <div className="table-subtext">{job.location || 'Localisation non definie'}</div>
-                      </td>
-                      <td><span className="badge badge-black">{job.priority || '-'}</span></td>
-                      <td>{toNumber(job.candidateCount)}</td>
-                      <td>{toNumber(job.qualifiedCount)}</td>
-                      <td>{toNumber(job.avgScore).toFixed(1)}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
+            <section className="dashboard-links-grid">
+              {cards.map((item) => (
+                <Link key={item.to} to={item.to} className="dashboard-link-card">
+                  <div className="dashboard-link-title">{item.title}</div>
+                  <div className="dashboard-link-description">{item.description}</div>
+                  <div className="dashboard-link-cta">{item.cta}</div>
+                </Link>
+              ))}
+            </section>
+
+            <section className="dashboard-v2-tools">
+              <CVUpload onUploadSuccess={loadDashboard} />
+              <div style={{ display: 'grid', gap: 16 }}>
+                <OutlookSync onSyncSuccess={loadDashboard} />
+                <div className="card">
+                  <div className="card-header">
+                    <span className="card-title">Synchronisation Gmail</span>
+                    <span className={`badge ${gmailConnected ? 'badge-green' : 'badge-gray'}`}>
+                      {gmailConnected ? 'Connecte' : 'Non connecte'}
+                    </span>
+                  </div>
+                  <div className="card-body" style={{ display: 'grid', gap: 12 }}>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                      Boite: {gmailStatus?.connection?.mailbox || 'non configuree'}
+                    </div>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                      <button className="btn btn-primary" type="button" onClick={handleGmailSync} disabled={gmailSyncing}>
+                        {gmailSyncing ? 'Synchronisation...' : 'Lancer sync Gmail'}
+                      </button>
+                      <button className="btn btn-ghost" type="button" onClick={loadDashboard}>
+                        Rafraichir indicateurs
+                      </button>
+                    </div>
+                    {gmailMessage ? (
+                      <div className={`alert ${gmailMessage.toLowerCase().includes('echec') ? 'alert-error' : 'alert-success'}`}>
+                        {gmailMessage}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="dashboard-v2-grid">
+              <div className="card">
+                <div className="card-header">
+                  <span className="card-title">Top candidats</span>
+                </div>
+                <div className="card-body">
+                  {topCandidates.length === 0 ? (
+                    <div className="empty-state" style={{ padding: '24px 12px' }}>
+                      Aucun candidat score pour le moment.
+                    </div>
+                  ) : (
+                    <div className="score-band-list">
+                      {topCandidates.map((candidate) => (
+                        <div className="score-band-row" key={candidate.id || `${candidate.fullName}-${candidate.email}`}>
+                          <div>
+                            <div className="score-band-label">{candidate.fullName || 'Candidat'}</div>
+                            <div className="score-band-subtitle">
+                              {candidate.targetJob || 'Sans poste'} • {candidate.statusLabel || candidate.status || 'Nouveau'}
+                            </div>
+                          </div>
+                          <div className="score-pill" style={{ color: '#15803d', borderColor: '#86efac', background: '#f0fdf4' }}>
+                            {toNumber(candidate.matchScore).toFixed(1)}%
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-header">
+                  <span className="card-title">Repartition des scores</span>
+                </div>
+                <div className="card-body">
+                  <div className="score-band-list">
+                    {scoreDistribution.map((band) => (
+                      <div className="score-band-row" key={band.label}>
+                        <div className="score-band-label">{band.label}</div>
+                        <div className="badge badge-blue">{toNumber(band.count)} candidat(s)</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="dashboard-v2-grid">
+              <div className="card">
+                <div className="card-header">
+                  <span className="card-title">Postes suivis</span>
+                </div>
+                <div className="card-body">
+                  {jobsOverview.length === 0 ? (
+                    <div className="empty-state" style={{ padding: '24px 12px' }}>
+                      Aucun poste configure.
+                    </div>
+                  ) : (
+                    <div className="table-scroll">
+                      <table className="table">
+                        <thead>
+                          <tr>
+                            <th>Poste</th>
+                            <th>Candidats</th>
+                            <th>Qualifies</th>
+                            <th>Score moyen</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {jobsOverview.slice(0, 8).map((job) => (
+                            <tr key={job.id}>
+                              <td>{job.name}</td>
+                              <td>{toNumber(job.candidateCount)}</td>
+                              <td>{toNumber(job.qualifiedCount)}</td>
+                              <td>{toNumber(job.avgScore).toFixed(1)}%</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-header">
+                  <span className="card-title">Alertes SLA</span>
+                </div>
+                <div className="card-body">
+                  {slaAlerts.length === 0 ? (
+                    <div className="empty-state" style={{ padding: '24px 12px' }}>
+                      Aucune alerte critique.
+                    </div>
+                  ) : (
+                    <div className="alert-list">
+                      {slaAlerts.map((item) => (
+                        <div key={item.id || `${item.fullName}-${item.targetJob}`} className="alert-item">
+                          <div>
+                            <div className="alert-item-title">{item.fullName || 'Candidat'}</div>
+                            <div className="alert-item-subtitle">{item.targetJob || 'Sans poste'}</div>
+                          </div>
+                          <div className="badge badge-yellow">{toNumber(item.matchScore).toFixed(1)}%</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+          </>
+        )}
       </div>
     </>
   );

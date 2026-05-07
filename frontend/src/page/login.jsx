@@ -208,8 +208,8 @@ export default function Login({ onLogin }) {
           marginBottom: 20,
           letterSpacing: -0.5,
         }}>
-          COLORADO<br />
-          RH<br />
+          TALENTMATCH<br />
+          IA<br />
           <span style={{ color: '#dc2626' }}>PLATEFORME</span>
         </h1>
 
@@ -617,7 +617,7 @@ export default function Login({ onLogin }) {
             textAlign: 'center', marginTop: 32,
             fontSize: '0.78rem', color: '#9ca3af',
           }}>
-            CV Manager — Recruitment Intelligence Suite
+            TalentMatch IA — Recruitment Intelligence Suite
           </p>
         </div>
       </div>

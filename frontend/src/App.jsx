@@ -2,13 +2,14 @@ import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Dashboard from './page/Dashboard';
-import Dossiers from './page/Dossiers';
 import DossiersCV from './page/DossiersCV';
 import Candidats from './page/Candidats';
 import Postes from './page/Postes';
+import ChatRH from './page/ChatRH';
 import OutlookSync from './components/OutlookSync';
 
 import AnalyseIA from './page/AnalyseIA';
+import Entretiens from './page/Entretiens';
 import GestionUsers from './page/GestionUsers';
 import Login from './page/login';
 import Setup from './page/Setup';
@@ -117,10 +118,12 @@ export default function App() {
         <main className="app-main">
           <Routes>
             <Route path="/"          element={<Dashboard />} />
-            <Route path="/dossiers"    element={<Dossiers />} />
+            <Route path="/dossiers"    element={<Navigate to="/dossiers-cv" replace />} />
             <Route path="/dossiers-cv" element={<DossiersCV />} />
             <Route path="/candidats" element={<Candidats />} />
             <Route path="/postes"    element={<Postes />} />
+            <Route path="/entretiens" element={<Entretiens />} />
+            <Route path="/chat-rh"   element={<ChatRH />} />
             <Route path="/outlook"    element={<OutlookSync />} />
             
             <Route path="/analyse-ia" element={<AnalyseIA />} />

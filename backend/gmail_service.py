@@ -8,7 +8,7 @@ def get_emails():
     flow = InstalledAppFlow.from_client_secrets_file(
         'client_secret_526147678586-xxxx.json', SCOPES
     )
-    creds = flow.run_local_server(port=0)
+    creds = flow.run_local_server(port=8080)
     service = build('gmail', 'v1', credentials=creds)
 
     results = service.users().messages().list(userId='me', maxResults=5).execute()

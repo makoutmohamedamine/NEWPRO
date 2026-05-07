@@ -2,7 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
-    PosteViewSet, CandidatViewSet, CVViewSet, CandidatureViewSet,
+    PosteViewSet, CandidatViewSet, CVViewSet, CandidatureViewSet, EntretienViewSet,
     dashboard, candidates_list, candidate_detail, candidate_delete, candidate_upload, candidate_update,
     # Outlook / ML
     outlook_sync, outlook_status, analyse_cv_ml, dossiers,
@@ -17,7 +17,8 @@ from .views import (
     # Gestion des utilisateurs
     user_list, user_create, user_detail, user_delete, user_toggle_active,
     # Workflow / Domains
-    workflow_statuses, domains_list, domain_candidates, candidate_status_history,
+    workflow_statuses, domains_list, domain_candidates, domain_create, candidate_move_domain, candidate_status_history,
+    chat_ask, chat_history, chat_history_clear, chat_conversations, chat_conversation_delete,
 )
 from .scoring_api import (
     calculate_score_for_candidature,
@@ -30,6 +31,7 @@ router.register(r'postes', PosteViewSet)
 router.register(r'candidats', CandidatViewSet)
 router.register(r'cvs', CVViewSet)
 router.register(r'candidatures', CandidatureViewSet)
+router.register(r'entretiens', EntretienViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -62,7 +64,14 @@ urlpatterns = [
     path('candidates/<int:pk>/history/', candidate_status_history),
     path('workflow/statuses/', workflow_statuses),
     path('domains/', domains_list),
+    path('domains/create/', domain_create),
     path('domains/<int:pk>/candidates/', domain_candidates),
+    path('candidates/<int:pk>/move-domain/', candidate_move_domain),
+    path('chat/ask/', chat_ask),
+    path('chat/history/', chat_history),
+    path('chat/history/clear/', chat_history_clear),
+    path('chat/conversations/', chat_conversations),
+    path('chat/conversations/<int:pk>/', chat_conversation_delete),
 
     # ── Pipeline Outlook (legacy) ────────────────────────────────────────────
     path('outlook/sync/', outlook_sync),           # POST — déclenche la synchro

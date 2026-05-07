@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
-import { deleteCandidate, getCandidats, getWorkflowStatuses, updateCandidate } from '../api/api';
+import { Link } from 'react-router-dom';
+import {
+  createEntretien,
+  deleteCandidate,
+  getCandidats,
+  getEntretiens,
+  getWorkflowStatuses,
+  updateCandidate,
+} from '../api/api';
 
 const DEFAULT_STATUS_OPTIONS = [
   { value: 'nouveau', label: 'Nouveau', color: '#b42318' },
@@ -12,7 +20,219 @@ const DEFAULT_STATUS_OPTIONS = [
   { value: 'refuse', label: 'Refuse', color: '#6b7280' },
 ];
 
-function CandidateCard({ candidate, statusOptions, onStatusChange, onPreviewCv, onDelete }) {
+const ENTRETIEN_TYPE_OPTIONS = [
+  { value: 'rh', label: 'Entretien RH' },
+  { value: 'technique', label: 'Entretien technique' },
+  { value: 'final', label: 'Entretien final' },
+  { value: 'autre', label: 'Autre' },
+];
+
+function isInterviewStatus(status) {
+  return status === 'entretien_rh' || status === 'entretien_technique' || status === 'entretien';
+}
+
+function defaultEntretienTypeFromStatus(status) {
+  if (status === 'entretien_technique') return 'technique';
+  if (status === 'entretien_rh' || status === 'entretien') return 'rh';
+  return 'rh';
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+function toDatetimeLocalValue(d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return '';
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function fromDatetimeLocalValue(s) {
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function CalendarPlanIcon() {
+  return (
+    <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+    </svg>
+  );
+}
+
+function PlanInterviewModal({ candidate, onClose, onSaved }) {
+  const start = new Date();
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
+  const [form, setForm] = useState({
+    titre: `Entretien — ${candidate.fullName || ''}`.trim(),
+    type_entretien: defaultEntretienTypeFromStatus(candidate.status),
+    debut: toDatetimeLocalValue(start),
+    fin: toDatetimeLocalValue(end),
+    lieu: '',
+    notes: '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const candidatureId = candidate.candidatureId;
+  const handleSubmit = async (ev) => {
+    ev.preventDefault();
+    if (!candidatureId) {
+      setError('Aucune candidature liée : impossible de planifier un entretien.');
+      return;
+    }
+    const debutIso = fromDatetimeLocalValue(form.debut);
+    const finIso = fromDatetimeLocalValue(form.fin);
+    if (!debutIso || !finIso) {
+      setError('Indiquez une date et heure de début et de fin.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await createEntretien({
+        candidature: candidatureId,
+        titre: form.titre,
+        type_entretien: form.type_entretien,
+        debut: debutIso,
+        fin: finIso,
+        lieu: form.lieu,
+        notes: form.notes,
+      });
+      onSaved();
+      onClose();
+    } catch (e) {
+      const msg = e.response?.data;
+      if (typeof msg === 'object' && msg !== null) {
+        const parts = Object.entries(msg).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`);
+        setError(parts.join(' — ') || 'Erreur de sauvegarde.');
+      } else {
+        setError(e.message || 'Erreur de sauvegarde.');
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="entretiens-modal-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className="entretiens-modal card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="plan-entretien-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 id="plan-entretien-title" className="entretiens-modal-title">
+          Planifier un entretien
+        </h2>
+        <p className="candidate-plan-modal-meta">
+          {candidate.fullName}
+          {candidate.targetJob ? ` — ${candidate.targetJob}` : ''}
+        </p>
+        {error && <div className="alert alert-error entretiens-modal-error">{error}</div>}
+        <form onSubmit={handleSubmit} className="entretiens-form">
+          <div className="form-group">
+            <label className="form-label" htmlFor="plan-titre">
+              Titre
+            </label>
+            <input
+              id="plan-titre"
+              className="form-input"
+              value={form.titre}
+              onChange={(e) => setForm({ ...form, titre: e.target.value })}
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label" htmlFor="plan-type">
+              Type
+            </label>
+            <select
+              id="plan-type"
+              className="form-select"
+              value={form.type_entretien}
+              onChange={(e) => setForm({ ...form, type_entretien: e.target.value })}
+            >
+              {ENTRETIEN_TYPE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="entretiens-form-row">
+            <div className="form-group">
+              <label className="form-label" htmlFor="plan-debut">
+                Début
+              </label>
+              <input
+                id="plan-debut"
+                className="form-input"
+                type="datetime-local"
+                required
+                value={form.debut}
+                onChange={(e) => setForm({ ...form, debut: e.target.value })}
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label" htmlFor="plan-fin">
+                Fin
+              </label>
+              <input
+                id="plan-fin"
+                className="form-input"
+                type="datetime-local"
+                required
+                value={form.fin}
+                onChange={(e) => setForm({ ...form, fin: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="form-group">
+            <label className="form-label" htmlFor="plan-lieu">
+              Lieu / lien visio
+            </label>
+            <input
+              id="plan-lieu"
+              className="form-input"
+              value={form.lieu}
+              onChange={(e) => setForm({ ...form, lieu: e.target.value })}
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label" htmlFor="plan-notes">
+              Notes
+            </label>
+            <textarea
+              id="plan-notes"
+              className="form-textarea"
+              rows={2}
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+            />
+          </div>
+          <div className="entretiens-form-actions">
+            <button type="button" className="btn btn-ghost" onClick={onClose}>
+              Annuler
+            </button>
+            <button type="submit" className="btn btn-primary" disabled={saving || !candidatureId}>
+              {saving ? 'Enregistrement…' : 'Créer dans le calendrier'}
+            </button>
+          </div>
+        </form>
+        <p className="candidate-plan-modal-foot">
+          L&apos;entretien sera visible tout de suite dans{' '}
+          <Link to="/entretiens" onClick={onClose}>
+            Entretiens
+          </Link>
+          .
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function CandidateCard({ candidate, statusOptions, onStatusChange, onPreviewCv, onDelete, hasEntretienPlanned, onPlanInterview }) {
   const [saving, setSaving] = useState(false);
   const hasEvaluation = Boolean(candidate.targetJob) && Number(candidate.matchScore || 0) > 0;
   const currentStatus = statusOptions.find((item) => item.value === candidate.status);
@@ -90,6 +310,35 @@ function CandidateCard({ candidate, statusOptions, onStatusChange, onPreviewCv, 
         </div>
       </div>
 
+      {isInterviewStatus(candidate.status) && (
+        <div className="candidate-plan-row">
+          {candidate.candidatureId ? (
+            <>
+              <button
+                type="button"
+                className="candidate-plan-btn"
+                onClick={() => onPlanInterview(candidate)}
+                title="Planifier un créneau d'entretien"
+              >
+                <span className="candidate-plan-btn-icon" aria-hidden>
+                  <CalendarPlanIcon />
+                </span>
+                <span className="candidate-plan-btn-text">Planifier</span>
+              </button>
+              {hasEntretienPlanned && (
+                <span className="candidate-plan-badge">
+                  Créneau enregistré — voir <Link to="/entretiens">Entretiens</Link>
+                </span>
+              )}
+            </>
+          ) : (
+            <span className="candidate-plan-unavailable">
+              Statut entretien : associez d&apos;abord ce candidat à une fiche de poste pour activer la planification.
+            </span>
+          )}
+        </div>
+      )}
+
       <div className="candidate-card-actions">
         <div className="candidate-action-field">
           <label className="candidate-action-label">Changer le statut</label>
@@ -123,17 +372,41 @@ function CandidateCard({ candidate, statusOptions, onStatusChange, onPreviewCv, 
 
 export default function Candidats() {
   const [items, setItems] = useState([]);
+  const [entretiens, setEntretiens] = useState([]);
   const [statusOptions, setStatusOptions] = useState(DEFAULT_STATUS_OPTIONS);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('all');
   const [previewCv, setPreviewCv] = useState(null);
+  const [planForCandidate, setPlanForCandidate] = useState(null);
+
+  const candidatureIdsWithEntretien = useMemo(() => {
+    const ids = new Set();
+    for (const e of entretiens) {
+      const id = e.candidature;
+      if (id != null) ids.add(Number(id));
+    }
+    return ids;
+  }, [entretiens]);
 
   const load = () => {
     setLoading(true);
-    getCandidats()
-      .then((res) => setItems(res.data.candidates || []))
+    Promise.all([getCandidats(), getEntretiens()])
+      .then(([cRes, eRes]) => {
+        setItems(cRes.data.candidates || []);
+        const ent = Array.isArray(eRes.data) ? eRes.data : eRes.data?.results || [];
+        setEntretiens(ent);
+      })
       .finally(() => setLoading(false));
+  };
+
+  const refreshEntretiensOnly = () => {
+    getEntretiens()
+      .then((eRes) => {
+        const ent = Array.isArray(eRes.data) ? eRes.data : eRes.data?.results || [];
+        setEntretiens(ent);
+      })
+      .catch(() => {});
   };
 
   useEffect(() => {
@@ -159,6 +432,15 @@ export default function Candidats() {
     setItems((current) =>
       current.map((item) => ((item.candidateId || item.id) === candidateId ? updated : item))
     );
+    if (isInterviewStatus(nextStatus)) {
+      refreshEntretiensOnly();
+    }
+  };
+
+  const hasEntretienForCandidate = (c) => {
+    const cid = c.candidatureId != null ? Number(c.candidatureId) : null;
+    if (cid == null) return false;
+    return candidatureIdsWithEntretien.has(cid);
   };
 
   const resolveCvUrl = (url) => {
@@ -231,12 +513,14 @@ export default function Candidats() {
           <div className="candidate-grid">
             {filtered.map((candidate) => (
               <CandidateCard
-                key={candidate.id}
+                key={candidate.candidateId ?? candidate.id}
                 candidate={candidate}
                 statusOptions={statusOptions}
                 onStatusChange={handleStatusChange}
                 onPreviewCv={handlePreviewCv}
                 onDelete={handleDeleteCandidate}
+                hasEntretienPlanned={hasEntretienForCandidate(candidate)}
+                onPlanInterview={(c) => setPlanForCandidate(c)}
               />
             ))}
           </div>
@@ -247,6 +531,15 @@ export default function Candidats() {
           </div>
         )}
       </div>
+      {planForCandidate && (
+        <PlanInterviewModal
+          key={planForCandidate.candidatureId || planForCandidate.candidateId || planForCandidate.id}
+          candidate={planForCandidate}
+          onClose={() => setPlanForCandidate(null)}
+          onSaved={refreshEntretiensOnly}
+        />
+      )}
+
       {previewCv && (
         <div
           style={{

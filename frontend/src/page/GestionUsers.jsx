@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { getUsers, createUser, updateUser, deleteUser, toggleUserActive } from '../api/api';
 
 const ROLE_LABELS = { admin: 'Administrateur', recruteur: 'Recruteur RH' };
@@ -149,12 +149,12 @@ export default function GestionUsers() {
   const [toast, setToast] = useState(null);
   const [search, setSearch] = useState('');
 
-  const showToast = (msg, type = 'success') => {
+  const showToast = useCallback((msg, type = 'success') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
-  };
+  }, []);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const { data } = await getUsers();
@@ -163,9 +163,11 @@ export default function GestionUsers() {
       showToast('Erreur lors du chargement des utilisateurs', 'error');
     }
     setLoading(false);
-  };
+  }, [showToast]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const handleCreate = async (payload) => {
     setSaving(true);
