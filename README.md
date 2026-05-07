@@ -1,4 +1,4 @@
-# NEWPRO - Plateforme RH intelligente
+# - Plateforme RH intelligente
 
 Application full-stack pour la gestion de candidatures, l'analyse de CV (ML + IA), le suivi du workflow RH et la gestion des entretiens.
 
