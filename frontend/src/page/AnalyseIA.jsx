@@ -255,11 +255,19 @@ export default function AnalyseIA() {
             onClick={handleAnalyse}
           >
             {loading ? (
-              <><span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Analyse en cours…</>
+              <><span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Analyse IA en cours (30-60s)…</>
             ) : (
               'Analyser avec l\'IA'
             )}
           </button>
+          {loading && (
+            <div style={{
+              fontSize: '0.75rem', color: '#7c3aed', lineHeight: 1.6,
+              background: '#ede9fe', borderRadius: 8, padding: '10px 12px', textAlign: 'center',
+            }}>
+              Le modele IA analyse votre CV en profondeur. Merci de patienter…
+            </div>
+          )}
 
           {!result && !loading && (
             <div style={{

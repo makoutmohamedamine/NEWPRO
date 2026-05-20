@@ -19,6 +19,7 @@ from .views import (
     # Workflow / Domains
     workflow_statuses, domains_list, domain_candidates, domain_create, candidate_move_domain, candidate_status_history,
     chat_ask, chat_history, chat_history_clear, chat_conversations, chat_conversation_delete,
+    admin_stats,
 )
 from .scoring_api import (
     calculate_score_for_candidature,
@@ -50,6 +51,7 @@ urlpatterns = [
     # ── Gestion des utilisateurs (admin) ─────────────────────────────────────
     path('users/', user_list),                    # GET  — liste des comptes
     path('users/create/', user_create),           # POST — créer un compte
+    path('users/stats/', admin_stats),            # GET  — stats admin globales
     path('users/<int:pk>/', user_detail),         # GET/PUT/PATCH — voir/modifier
     path('users/<int:pk>/delete/', user_delete),  # DELETE — supprimer
     path('users/<int:pk>/toggle/', user_toggle_active),  # PATCH — activer/désactiver

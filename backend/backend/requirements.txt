@@ -23,5 +23,9 @@ numpy            # Calculs numériques
 msal             # Authentification Azure AD (OAuth2 Client Credentials)
 requests         # Appels HTTP vers l'API Graph
 
+# ── Production ──────────────────────────────────────────────────────────────────
+gunicorn         # Serveur WSGI (deploiement Linux)
+
 # ── Utilitaires ─────────────────────────────────────────────────────────────────
+apscheduler      # Planificateur de taches en arriere-plan (sync email auto)
 Pillow           # Traitement d'images (optionnel, pour miniatures)

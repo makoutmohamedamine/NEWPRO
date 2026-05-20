@@ -1,0 +1,23 @@
+[Unit]
+Description=NEWPRO Django (Gunicorn)
+After=network.target postgresql.service
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/newpro/backend
+EnvironmentFile=/var/www/newpro/backend/.env
+RuntimeDirectory=newpro
+RuntimeDirectoryMode=0755
+ExecStart=/var/www/newpro/backend/.venv/bin/gunicorn \
+    --workers 3 \
+    --bind unix:/run/newpro/gunicorn.sock \
+    --timeout 120 \
+    --access-logfile - \
+    --error-logfile - \
+    backend.wsgi:application
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

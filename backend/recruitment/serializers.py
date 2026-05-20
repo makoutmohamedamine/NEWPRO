@@ -57,24 +57,51 @@ class EntretienSerializer(serializers.ModelSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     """Serializer pour afficher les infos d'un utilisateur (sans mot de passe)."""
+    candidates_count = serializers.SerializerMethodField()
+    postes_count = serializers.SerializerMethodField()
+    candidatures_count = serializers.SerializerMethodField()
+    last_login_display = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'role', 'is_active', 'is_staff', 'is_superuser', 'date_joined']
-        read_only_fields = ['id', 'date_joined']
+        fields = [
+            'id', 'username', 'email', 'first_name', 'last_name',
+            'role', 'is_active', 'is_staff', 'is_superuser',
+            'date_joined', 'last_login',
+            'candidates_count', 'postes_count', 'candidatures_count', 'last_login_display',
+        ]
+        read_only_fields = ['id', 'date_joined', 'last_login']
+
+    def get_candidates_count(self, obj):
+        return obj.owned_candidats.count()
+
+    def get_postes_count(self, obj):
+        return obj.owned_postes.count()
+
+    def get_candidatures_count(self, obj):
+        return obj.owned_candidatures.count()
+
+    def get_last_login_display(self, obj):
+        if obj.last_login:
+            return obj.last_login.strftime('%d/%m/%Y %H:%M')
+        return 'Jamais connecté'
 
 
 class CreateUserSerializer(serializers.ModelSerializer):
     """Serializer pour créer un utilisateur avec mot de passe (admin uniquement)."""
-    password = serializers.CharField(write_only=True, min_length=6)
+    password = serializers.CharField(write_only=True, min_length=6, required=False, allow_blank=True)
 
     class Meta:
         model = User
-        fields = ['username', 'email', 'first_name', 'last_name', 'role', 'password']
+        fields = ['username', 'email', 'first_name', 'last_name', 'role', 'password', 'is_active']
 
     def create(self, validated_data):
-        password = validated_data.pop('password')
+        password = validated_data.pop('password', None)
         user = User(**validated_data)
-        user.set_password(password)  # Hachage sécurisé du mot de passe
+        if password:
+            user.set_password(password)
+        else:
+            user.set_unusable_password()
         user.save()
         return user
 

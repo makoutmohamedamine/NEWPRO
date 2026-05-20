@@ -1,7 +1,10 @@
 import axios from 'axios';
 
+const API_BASE_URL = (process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000/api').replace(/\/$/, '');
+
 const API = axios.create({
-  baseURL: 'http://127.0.0.1:8000/api',
+  baseURL: API_BASE_URL,
+  timeout: 90000, // 90s - suffisant pour les appels Groq (LLM peut prendre ~60s)
 });
 
 API.interceptors.request.use((config) => {
@@ -54,7 +57,7 @@ API.interceptors.response.use(
     }
 
     try {
-      const res = await axios.post('http://127.0.0.1:8000/api/auth/refresh/', { refresh: refreshToken });
+      const res = await axios.post(`${API_BASE_URL}/auth/refresh/`, { refresh: refreshToken });
       const newToken = res.data.access;
       localStorage.setItem('access_token', newToken);
       API.defaults.headers.common.Authorization = `Bearer ${newToken}`;
@@ -124,11 +127,13 @@ export const analyseCV = (formData) =>
 export const analyseCV_IA = (formData) =>
   API.post('/ai/analyse/', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000, // 2min pour l'analyse IA complete (LLM + extraction)
   });
 
 export const scoreCV_IA = (formData) =>
   API.post('/ai/score/', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
   });
 
 export const checkSetup = () => API.get('/auth/check-setup/');
@@ -136,6 +141,7 @@ export const setupSuperuser = (data) => API.post('/auth/setup/', data);
 export const getMe = () => API.get('/auth/me/');
 
 export const getUsers = () => API.get('/users/');
+export const getAdminStats = () => API.get('/users/stats/');
 export const createUser = (data) => API.post('/users/create/', data);
 export const updateUser = (id, data) => API.patch(`/users/${id}/`, data);
 export const deleteUser = (id) => API.delete(`/users/${id}/delete/`);

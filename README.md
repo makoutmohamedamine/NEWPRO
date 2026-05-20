@@ -1,4 +1,4 @@
-# - Plateforme RH intelligente
+# NEWPRO - Plateforme RH intelligente
 
 Application full-stack pour la gestion de candidatures, l'analyse de CV (ML + IA), le suivi du workflow RH et la gestion des entretiens.
 
@@ -129,6 +129,18 @@ Dans `frontend/`:
 - `npm start` : mode developpement
 - `npm run build` : build de production
 - `npm test` : tests
+
+## Deploiement production
+
+Voir le guide complet : [DEPLOYMENT.md](./DEPLOYMENT.md)
+
+Fichiers utiles dans `deploy/` : `env.example`, `nginx-newpro.conf`, `newpro-backend.service`, `install-server.sh`.
+
+Build frontend avec l'URL API de production :
+
+```bash
+REACT_APP_API_URL=https://votre-domaine.com/api npm run build
+```
 
 ## Securite
 

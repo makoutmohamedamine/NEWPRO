@@ -51,6 +51,10 @@ class Poste(models.Model):
 
     class Meta:
         db_table = "job_positions"
+        indexes = [
+            models.Index(fields=["created_by", "workflow_actif"]),
+            models.Index(fields=["created_at"]),
+        ]
 
     def __str__(self):
         return self.titre
@@ -84,6 +88,11 @@ class Candidat(models.Model):
 
     class Meta:
         db_table = "candidates"
+        indexes = [
+            models.Index(fields=["created_by", "created_at"]),
+            models.Index(fields=["created_at"]),
+            models.Index(fields=["nom", "prenom"]),
+        ]
 
     def __str__(self):
         return f"{self.prenom} {self.nom}"
@@ -159,6 +168,13 @@ class Candidature(models.Model):
     class Meta:
         db_table = "applications"
         ordering = ["-score", "-updated_at"]
+        indexes = [
+            models.Index(fields=["created_by", "statut"]),
+            models.Index(fields=["poste", "statut"]),
+            models.Index(fields=["candidat", "statut"]),
+            models.Index(fields=["score"]),
+            models.Index(fields=["statut", "updated_at"]),
+        ]
 
 
 class Entretien(models.Model):

@@ -98,7 +98,9 @@ DEFAULT_DOMAIN_NAMES = [
 
 
 def is_admin(user):
-    return user.is_authenticated and user.role == "admin"
+    return user.is_authenticated and (
+        user.role == "admin" or user.is_superuser or user.is_staff
+    )
 
 
 def scope_owned_queryset(request, queryset, owner_field="created_by"):
@@ -999,6 +1001,76 @@ def user_toggle_active(request, pk):
     user.is_active = not user.is_active
     user.save()
     return Response({"message": "Statut mis a jour.", "user": UserSerializer(user).data})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def admin_stats(request):
+    """Statistiques globales pour le tableau de bord administrateur."""
+    if not is_admin(request.user):
+        return Response({"error": "Acces refuse."}, status=403)
+
+    from django.utils import timezone as tz
+    from datetime import timedelta
+
+    now = tz.now()
+    last_30 = now - timedelta(days=30)
+    last_7 = now - timedelta(days=7)
+
+    users = User.objects.all()
+    total_users = users.count()
+    active_users = users.filter(is_active=True).count()
+    inactive_users = users.filter(is_active=False).count()
+    new_users_30 = users.filter(date_joined__gte=last_30).count()
+    new_users_7 = users.filter(date_joined__gte=last_7).count()
+
+    by_role = {}
+    for role, label in [("admin", "Administrateurs"), ("rh", "Resp. RH"), ("recruteur", "Recruteurs"), ("manager", "Managers")]:
+        by_role[role] = {"label": label, "count": users.filter(role=role).count()}
+
+    # Activite par utilisateur (sur les 30 derniers jours)
+    user_activity = []
+    for u in users.order_by("-date_joined"):
+        candidates = Candidat.objects.filter(created_by=u).count()
+        postes = Poste.objects.filter(created_by=u).count()
+        candidatures = Candidature.objects.filter(created_by=u).count()
+        recent_candidates = Candidat.objects.filter(created_by=u, created_at__gte=last_30).count()
+        user_activity.append({
+            "id": u.id,
+            "username": u.username,
+            "full_name": f"{u.first_name} {u.last_name}".strip() or u.username,
+            "email": u.email,
+            "role": u.role,
+            "is_active": u.is_active,
+            "date_joined": u.date_joined.strftime("%d/%m/%Y"),
+            "last_login": u.last_login.strftime("%d/%m/%Y %H:%M") if u.last_login else None,
+            "candidates_total": candidates,
+            "postes_total": postes,
+            "candidatures_total": candidatures,
+            "candidates_30d": recent_candidates,
+        })
+
+    # Stats globales du systeme
+    system = {
+        "total_candidates": Candidat.objects.count(),
+        "total_postes": Poste.objects.count(),
+        "total_candidatures": Candidature.objects.count(),
+        "candidates_30d": Candidat.objects.filter(created_at__gte=last_30).count(),
+        "candidatures_30d": Candidature.objects.filter(created_at__gte=last_30).count(),
+    }
+
+    return Response({
+        "users": {
+            "total": total_users,
+            "active": active_users,
+            "inactive": inactive_users,
+            "new_30d": new_users_30,
+            "new_7d": new_users_7,
+            "by_role": by_role,
+        },
+        "activity": user_activity,
+        "system": system,
+    })
 
 
 @api_view(["GET"])
@@ -2319,37 +2391,53 @@ def chat_ask(request):
         domain_rows = [{"id": d.id, "nom": d.nom, "actif": d.actif} for d in domains_qs]
 
         system_prompt = (
-            "Tu es TalentMatch IA, assistant intelligent pour des recruteurs RH connectés à leur base interne. "
-            "Tu réponds en français, clairement. "
-            "Si la question concerne les candidats/postes/domaines, appuie-toi prioritairement sur le contexte JSON fourni. "
-            "Le contexte candidats contient notamment email et telephone lorsqu'ils sont enregistrés : "
-            "tu DOIS les citer tels quels si l'utilisateur les demande et qu'ils figurent dans le contexte pour la bonne personne. "
-            "Si un champ est absent ou null pour un candidat, dis simplement qu'il n'est pas renseigné en base (ne pas inventer). "
-            "Si la question est générale, réponds avec des connaissances utiles. "
-            "N'invente pas de scores, noms ou coordonnées qui ne sont pas dans le contexte. "
-            "Tu réponds uniquement en JSON valide."
+            "Tu es TalentMatch IA, un assistant RH expert integre a un systeme ATS professionnel. "
+            "Tu aides les recruteurs a gerer leurs candidats, postes et processus de recrutement. "
+            "REGLES ABSOLUES: "
+            "1) Reponds TOUJOURS en francais, de facon claire, structuree et professionnelle. "
+            "2) Pour toute question sur candidats/postes/domaines: utilise EXCLUSIVEMENT les donnees JSON du contexte. "
+            "3) Cite les informations exactes (nom, email, telephone, score) telles qu'elles apparaissent dans le contexte. "
+            "4) Si une information est absente du contexte, dis-le clairement - NE JAMAIS inventer. "
+            "5) Pour les questions generales RH, reponds avec expertise et precision. "
+            "6) Reponds uniquement en JSON valide strict (pas de markdown, pas de texte autour)."
         )
         user_prompt = (
-            "Retourne EXACTEMENT ce JSON:\n"
+            "Reponds a la question RH. Retourne EXACTEMENT ce JSON:\n"
             "{\n"
-            '  "answer": "réponse claire pour l’utilisateur",\n'
-            '  "highlights": ["point 1", "point 2"],\n'
-            '  "suggestedActions": ["action 1", "action 2"]\n'
+            '  "answer": "reponse detaillee et professionnelle en francais",\n'
+            '  "highlights": ["point cle 1", "point cle 2"],\n'
+            '  "suggestedActions": ["action concrete 1", "action concrete 2"]\n'
             "}\n\n"
-            "Historique recent de cette conversation (coherence du fil; ne pas repeter mot pour mot si inutile):\n"
+            f"QUESTION: {question}\n\n"
+            "HISTORIQUE (coherence conversation):\n"
             f"{history_block}\n\n"
-            f"Question utilisateur actuelle: {question}\n\n"
-            "Contexte candidats:\n"
+            f"BASE DE DONNEES - {len(candidate_rows)} CANDIDATS:\n"
             f"{json.dumps(candidate_rows, ensure_ascii=False)}\n\n"
-            "Contexte postes:\n"
+            f"BASE DE DONNEES - {len(poste_rows)} POSTES:\n"
             f"{json.dumps(poste_rows, ensure_ascii=False)}\n\n"
-            "Contexte domaines:\n"
-            f"{json.dumps(domain_rows, ensure_ascii=False)}\n"
+            "DOMAINES ACTIFS:\n"
+            f"{json.dumps(domain_rows, ensure_ascii=False)}\n\n"
+            "Instructions: Si liste demandee, utilise des tirets. "
+            "Cite coordonnees exactes du contexte. "
+            "highlights=informations cles, suggestedActions=actions concretes."
         )
 
-        llm = _call_groq(system_prompt, user_prompt, max_tokens=1400)
+        llm = _call_groq(system_prompt, user_prompt, max_tokens=2000, force_json=True)
         if not llm.get("ok"):
-            fail_answer = "Le service IA est temporairement indisponible. Reessayez dans un instant."
+            error_code = llm.get("error_code", "")
+            if error_code == "invalid_api_key":
+                fail_answer = (
+                    "La cle API Groq est invalide ou expiree. "
+                    "Pour reactiver le chatbot IA: allez sur https://console.groq.com/keys, "
+                    "generez une nouvelle cle gratuite, et mettez-la dans backend/.env (variable GROQ_API_KEY), "
+                    "puis redemarrez le serveur Django."
+                )
+            elif error_code == "rate_limited":
+                fail_answer = f"Limite de requetes atteinte. {llm.get('error', 'Reessayez dans quelques secondes.')}"
+            elif error_code == "json_parse_error" and llm.get("raw"):
+                fail_answer = llm.get("raw", "").strip() or "Je n'ai pas de réponse exploitable pour le moment."
+            else:
+                fail_answer = llm.get("error") or "Le service IA est temporairement indisponible. Reessayez dans un instant."
             ChatMessage.objects.create(
                 user=request.user,
                 conversation=conv,

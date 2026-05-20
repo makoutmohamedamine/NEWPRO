@@ -5,10 +5,11 @@ import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 # Charger explicitement le .env du dossier backend, quel que soit le CWD.
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env", override=True)
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-me')
-DEBUG = True
-ALLOWED_HOSTS = ['*']
+DEBUG = os.getenv('DEBUG', 'True').strip().lower() in {'1', 'true', 'yes', 'on'}
+_allowed = os.getenv('ALLOWED_HOSTS', '*').strip()
+ALLOWED_HOSTS = [h.strip() for h in _allowed.split(',') if h.strip()] or ['*']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -20,7 +21,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
-    'recruitment',
+    'recruitment.apps.RecruitmentConfig',
 ]
 
 MIDDLEWARE = [
@@ -85,6 +86,22 @@ DATABASES = {
         'PASSWORD': DB_PASSWORD,
         'HOST': DB_HOST,
         'PORT': DB_PORT,
+        'CONN_MAX_AGE': 60,  # persistance connexion (secondes) — evite reconnexions a chaque requete
+        'OPTIONS': {
+            'connect_timeout': 10,
+        },
+    }
+}
+
+# ── Cache en memoire locale (performances) ───────────────────────────────────
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'talentmatch-cache',
+        'TIMEOUT': 300,  # 5 minutes par defaut
+        'OPTIONS': {
+            'MAX_ENTRIES': 1000,
+        },
     }
 }
 
@@ -101,10 +118,18 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
-CORS_ALLOW_ALL_ORIGINS = True
+_cors_all = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'True').strip().lower() in {'1', 'true', 'yes', 'on'}
+CORS_ALLOW_ALL_ORIGINS = _cors_all
+if not _cors_all:
+    CORS_ALLOWED_ORIGINS = [
+        o.strip()
+        for o in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',')
+        if o.strip()
+    ]
 
 # Autorise l'embed des fichiers media (PDF CV) dans le frontend local.
 # Sans cela, les navigateurs peuvent bloquer l'affichage en iframe/object.

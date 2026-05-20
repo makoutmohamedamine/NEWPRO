@@ -11,7 +11,7 @@ import OutlookSync from './components/OutlookSync';
 import AnalyseIA from './page/AnalyseIA';
 import Entretiens from './page/Entretiens';
 import GestionUsers from './page/GestionUsers';
-import Login from './page/login';
+import Login from './page/LoginModern';
 import Setup from './page/Setup';
 import { checkSetup } from './api/api';
 
@@ -66,7 +66,7 @@ export default function App() {
     if (displayName) {
       setWelcomeToast(displayName);
       sessionStorage.removeItem('welcome_user');
-      setTimeout(() => setWelcomeToast(''), 2200);
+      setTimeout(() => setWelcomeToast(''), 2600);
     }
     setToken(accessToken);
     setCurrentUser(user);
@@ -109,9 +109,18 @@ export default function App() {
     <BrowserRouter>
       <div className="app-shell">
         {welcomeToast && (
-          <div className="welcome-toast">
-            <span className="welcome-toast-icon">👋</span>
-            <span>Bienvenue {welcomeToast}</span>
+          <div className="welcome-screen" role="status" aria-live="polite">
+            <div className="welcome-screen-card">
+              <div className="welcome-screen-logo">TM</div>
+              <span className="welcome-screen-kicker">Connexion reussie</span>
+              <h1>Bienvenue {welcomeToast}</h1>
+              <p>Votre espace TalentMatch IA se synchronise avec vos donnees RH.</p>
+              <div className="welcome-screen-loader">
+                <span />
+                <span />
+                <span />
+              </div>
+            </div>
           </div>
         )}
         <Sidebar onLogout={handleLogout} currentUser={currentUser} />
